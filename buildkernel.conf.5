@@ -1,0 +1,157 @@
+.TH BUILDKERNEL 5 "Version 1.0.0: July 2014"
+.SH NAME
+buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
+.SH SYNOPSIS
+.B /etc/buildkernel.conf
+.SH DESCRIPTION
+This file is used to define various variables and functions
+that are used by the \fBbuildkernel\fR(8)
+script. You \fImust\fR specify at least the \fBEFIPARTUUID\fR and
+\fBCRYPTPARTUUID\fR variables for \fBbuildkernel\fR(8) to be able to work properly;
+others are optional (see below for defaults).
+
+This file will be sourced into a \fBbash\fR(1) context, so normal \fBbash\fR(1) rules for
+variable definition, comments etc. apply.
+
+If \fBbuildkernel\fR(8) is installed using the standard \fBinstall.sh\fR script,
+then the installer will attempt to infer sensible values for \fBEFIPARTUUID\fR
+and \fBCRYPTPARTUUID\fR, and their definitions will already be present, uncommented, in
+\fB/etc/buildkernel.conf\fR on first use. However, even in this case, you should
+take care to verify that they are correct.
+
+You can also run \fBbuildkernel --easy-setup\fR to make changes to this file
+in a structured manner; doing so is recommended when starting out,
+to avoid obvious errors.
+.SH VARIABLES
+The following variables are mandatory and \fImust\fR be set in 
+\fB/etc/buildkernel.conf\fR, or \fBbuildkernel\fR(8)
+will not function properly:
+.RS
+.TP
+.BR EFIPARTUUID
+This \fImust\fR be set to the partition UUID of your EFI system partition.
+It will generally be on a removable USB key, but a partition on a fixed drive
+can also be specified.
+.br
+.TP
+.BR CRYPTPARTUUID
+This \fImust\fR be set to the partition UUID of the \fBLUKS\fR partition on your fixed
+drive, which contains a set of \fBlvm\fR logical volumes (for root, home and swap
+directories).
+
+\fBbuildkernel\fR assumes that the \fBLUKS\fR partition is secured with by a
+\fBgpg\fR(1) encrypted keyfile. At boot, you are prompted to enter the
+passphrase for this file. Because both the keyfile, and a passphrase to unlock
+it, are required, dual-factor security is obtained.
+.RE
+
+The following variables are optional, and \fImay\fR be set 
+in \fB/etc/buildkernel.conf\fR if their defaults
+are not suitable for your system:
+.RS
+.TP
+.BR KEYFILEPARTUUID
+This should be set to the partition UUID of the partition containing your
+\fBgpg\fR(1)-encrypted keyfile, used to unlock the \fBLUKS\fR partition (see
+above). The file should be called \fIluks-key.gpg\fR, and be stored in the top-level
+directory of this partition. If unspecified, \fBKEYFILEPARTUUID=EFIPARTUUID\fR will
+be assumed (i.e., that you have a single USB key holding both the EFI stub kernel and
+the encrypted keyfile).
+.br
+.TP
+.BR LUKSKEYFILE
+If you wish to rely only on the fallback passphrase (assuming you have set
+one up) and no keyfile, set this to the empty string (in which case,
+\fBKEYFILEPARTUUID\fR will be ignored). Defaults to \fBluks-key.gpg\fR if
+unset.
+.br
+.TP
+.BR ADDITIONALKERNELCMDS
+If you wish to pass any additional command line parameters in the kernel boot
+line (either for attention of the kernel itself, or for \fBgenkernel\fR(8)'s
+\fBinit\fR(8) script), you can specify them here. All of the important values
+for booting will be set by \fBbuildkernel\fR, so this defaults to an empty
+string if not set.
+
+One parameter you may wish to consider here is "root_trim=yes"; this will
+enable TRIM support on the encrypted LUKS partition (turned off by default).
+.br
+.TP
+.BR KEYMAP
+This variable specifies the keymap to be used in early userspace (that is, when
+the initramfs-based system is prompting you for a passphrase to unlock the
+\fBgpg\fR(1)-encrypted keyfile). It is \fInot\fR a standard locale keymap string,
+but rather one recognized by the \fI/usr/share/genkernel/defaults/initrd.d/00-keymaps.sh\fR
+script. If not specified here, \fBKEYMAP="us"\fR will be assumed.
+.br
+.TP
+.BR PLYMOUTHTHEME
+If you want to use the graphical boot splash manager \fBplymouth\fR(8), specify
+a theme here (for example, \fB"fade-in"\fR), and it will automatically be used
+at boot (this will also imply the additional kernel command line options of
+\fB"quiet splash"\fR, and turn off the early 'penguins' display). The default
+is for this variable to be set to the empty string, implying a textual boot console.
+.br
+.TP
+.BR EFIBOOTFILE
+This is the file to which the EFI-stub kernel will be saved, and it defaults to
+\fIbootx64.efi\fR, which is the 'magic' name most UEFI BIOSes will look for.
+If you are on a system that expects \fIonly\fR a Microsoft boot loader, you
+may have to change this to \fIbootmgfw.efi\fR.
+
+Most users will not need to override the default.
+.br
+.TP
+.BR EFIBOOTDIR
+This is the directory (under the EFI system partition root) in which the EFI-stub
+kernel will be saved. It defaults to \fI/EFI/Boot\fR, 
+which is the 'magic' path that most UEFI BIOSes will search. 
+If you are on a system that
+expects \fIonly\fR a Microsoft boot loader, you may have to change this path to
+\fI/EFI/Microsoft/Boot\fR.
+
+Most users will not need to override the default.
+.RE
+.SH FUNCTIONS
+The following hook functions \fImay\fR be specified in \fB/etc/buildkernel.conf\fR if
+you need to modify \fBbuildkernel\fR(8)'s behaviour: by default they are unset.
+Most users will not need to define these functions.
+.RS
+.TP
+.BR user_conform_config_file
+Define this hook function if you need to conform (modify the contents of) the
+kernel \fI/usr/src/linux/.config\fR file. Note that you should only really need
+to do this to override a setting forced by \fBbuildkernel\fR(8) itself; otherwise
+changes made using \fBmake menuconfig\fR are persisted (and this is the
+preferred way to change the configuration).
+.br
+.TP
+.BR user_modify_initramfs
+Define this hook function if you need to modify the initramfs during the
+\fBbuildkernel\fR(8) process. Upon entry, the \fBcpio\fR(1L) archive will
+already have been unpacked into \fI/boot/initramfs/\fR, and it is to this
+unpacked image that you should apply any changes. The contents of
+\fI/boot/initramfs/\fR will be repacked again automatically for you upon
+function exit.
+.RE
+.SH COPYRIGHT
+.nf
+Copyright \(co 2014 sakaki
+License GPLv3+ (GNU GPL version 3 or later)
+<http://gnu.org/licenses/gpl.html>
+
+This is free software, you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+.fi
+.SH AUTHORS
+sakaki \(em send bug reports or comments to <sakaki@deciban.com>
+.SH "SEE ALSO"
+.BR bash (1),
+.BR cpio (1L),
+.BR gpg (1),
+.BR cryptsetup (8),
+.BR genkernel (8),
+.BR init (8),
+.BR lvm (8),
+.BR plymouth (8),
+.BR portage (5).

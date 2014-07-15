@@ -1,0 +1,1865 @@
+#!/bin/bash
+#
+# Build kernel, modules and initial ramdisk in correct sequence, ensuring kernel
+# config is conformed, then sign if possible and copy to EFI boot partition.
+#
+# Copyright (c) 2014 sakaki <sakaki@deciban.com>
+#
+# License (GPL v3.0)
+# ------------------
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+set -e
+set -u
+shopt -s nullglob
+
+# Scroll to the bottom of this script to follow the main program flow.
+
+# ********************** variables ********************* 
+PROGNAME="$(basename "${0}")"
+CONFFILE="/etc/${PROGNAME}.conf"
+VERSION="1.0.0"
+DEFAULTEFIBOOTFILE="bootx64.efi"
+EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
+NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
+INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/g")"
+VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/g")"
+CURRENTVERSION="linux-$(uname -r)"
+LINUXDIR="/usr/src/linux"
+CURRENTCONFIG="/proc/config.gz"
+TARGETCONFIG="${LINUXDIR}/.config"
+BOOTDIR="/boot"
+EFIROOTDIR="${BOOTDIR}/efi"
+DEFAULTEFIBOOTDIR="/EFI/Boot"
+EFIBOOTDIR="${DEFAULTEFIBOOTDIR}"
+FULLEFIBOOTDIR="${EFIROOTDIR}${EFIBOOTDIR}"
+EFICONFIGFILE="config"
+OLDSUFFIX=".old"
+PARTUUIDDEVDIR="/dev/disk/by-partuuid"
+IDDEVDIR="/dev/disk/by-id"
+DEFAULTLUKSKEYFILE="luks-key.gpg"
+LUKSKEYFILE="${DEFAULTLUKSKEYFILE}"
+MODPROBEDIR="/etc/modprobe.d"
+CMDLINE_ROOT="/dev/ram0"
+CMDLINE_REAL_INIT="/usr/lib/systemd/systemd"
+CMDLINE_DOLVM_FLAG="dolvm"
+SECUREBOOTKEY="/etc/efikeys/db.key"
+SECUREBOOTCERT="/etc/efikeys/db.crt"
+SIGNEDSUFFIX=".signed"
+ADDITIONAL_KERNEL_CMDS=""
+CMDLINE_ROOTFSTYPE="ext4"
+CMDLINE_REAL_ROOT="/dev/mapper/vg1-root"
+CMDLINE_REAL_RESUME="/dev/mapper/vg1-swap"
+# you can use xconfig etc if you like - override in /etc/buildkernel.conf
+CONFIGTYPE="menuconfig"
+# following should already be in the environment; but to be safe...
+NUMCPUS=$(grep -E 'processor\s+:' /proc/cpuinfo | wc -l)
+NUMCPUSPLUSONE=$(( NUMCPUS + 1 ))
+# below silently updates an old config, auto-choosing defaults for new values
+CONFIGUPDATETYPE="olddefconfig"
+SILENTUPDATETYPE="olddefconfig"
+RED_TEXT="$(tput setaf 1)$(tput bold)"
+GREEN_TEXT="$(tput setaf 2)$(tput bold)"
+YELLOW_TEXT="$(tput setaf 3)$(tput bold)"
+RESET_ATTS="$(tput sgr0)"
+# used in subshells
+UNCOMPRESSEDINITRAMFS="${BOOTDIR}/initramfs.cpio"
+INITRAMFSDIR="${BOOTDIR}/initramfs"
+VERBOSITY=1
+PREFIXSTRING="* "
+SHOWPREFIX="${GREEN_TEXT}${PREFIXSTRING}${RESET_ATTS}"
+SHOWSUFFIX=""
+GPG1PATHFROM="/usr/bin/staticgpg"
+GPG1PATHTO="${INITRAMFSDIR}/usr/bin/gpg"
+GPGBUILDDIR="/root/tmpgpgbuild"
+TMPGPGPATH="${GPGBUILDDIR}/usr/bin/gpg"
+declare -i USINGUSBKEYFOREFI=0
+declare -i BACKUPOLDKERNEL=1
+EFIPARTNAME="EFI boot partition"
+DEFAULTKEYMAP="us"
+KEYMAP="${DEFAULTKEYMAP}"
+# leave blank if you don't want to use the plymouth graphical boot
+# manager, otherwise override to a theme of your choice, such as "text" or
+# "solar"
+DEFAULTPLYMOUTHTHEME=""
+PLYMOUTHTHEME="${DEFAULTPLYMOUTHTHEME}"
+# following variable is conformed on installation by ebuild
+# (to reflect setting of "plymouth" USE flag)
+USE_PLYMOUTH=true
+VERBOSITYFLAG=""
+ASKFLAG=""
+# following array variables set by find_all_gpg_keyfile_partitions function
+declare -a GPGUUIDS GPGPARTNAMES GPGDEVNAMES GPGPARTNUMS
+# following array variables set by find_all_luks_partitions function
+declare -a LUKSUUIDS LUKSPARTNAMES LUKSDEVNAMES LUKSPARTNUMS
+declare -a LUKSONUSBS
+# following array variables set by find_all_efi_system_partitions function
+declare -a EFIUUIDS EFIPARTNAMES EFIDEVNAMES EFIPARTNUMS
+declare -a EFIONUSBS
+# following array variables set by find_all_efi_boot_entries
+# (held in boot index order, NOT boot order)
+declare -a EBOOTIDS EBOOTNAMES EBOOTPATHS EBOOTUUIDS
+declare -a EBOOTISACTIVES EBOOTORDER
+declare -i EFIBOOTENTRIESSEARCHED=0
+# stores whether boot entry is for Windows or not, keyed by partition UUID
+declare -A HASWINBOOTLOADER
+# map between BOOT ID (a 4 digit hex string) and index in EBOOT... arrays
+declare -A EBOOTIDTOINDEX
+# used to unwind mountpoints on failure
+declare -A ALLMOUNTS
+# used by menu-driven config setting
+declare -i CONFIGDIRTY=0
+# archived prior versions of key config variables
+PROCVARS=("EFIPARTUUID" "CRYPTPARTUUID" "KEYFILEPARTUUID" "LUKSKEYFILE" \
+    "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP")
+NEXTVAR=""
+for NEXTVAR in "${PROCVARS[@]}"; do
+    declare "OLD_${NEXTVAR}"=""
+done
+
+# running under EFI?
+declare -i USINGEFI=0
+
+declare -i MOUNTEDONENTRY=0
+# program arguments (booleans in this case)
+declare -i ARG_ASK=0 ARG_CLEAN=0 ARG_COPYFROMSTAGING=0 ARG_HELP=0
+declare -i ARG_STAGEONLY=0 ARG_UNMOUNTATEND=0 ARG_VERBOSE=0 ARG_VERSION=0
+declare -i ARG_POSTCLEAR=0 ARG_MENUCONFIG=0 ARG_SNAPSHOTBACKUP=0
+declare -i ARG_EASYSETUP=0
+
+# ***************** various functions ****************** 
+cleanup_and_exit_with_code() {
+    # add any additional cleanup code here
+    set +e
+    trap - EXIT
+    umount_all_remembered_mountpoints
+    exit $1
+}
+fn_exists() {
+    declare -f -F "${1}" > /dev/null
+    return $?
+}
+show() {
+    local MESSAGE=${1:-""}
+    local VERBLEVEL=${2:-${VERBOSITY}}
+    if (( VERBLEVEL >=1 )); then
+        echo -e "${SHOWPREFIX}${MESSAGE}${SHOWSUFFIX}"
+    fi
+}
+warning() {
+    echo -e "${YELLOW_TEXT}${PREFIXSTRING}${RESET_ATTS}${PROGNAME}: Warning: ${1}" >&2
+}
+die() {
+    echo
+    echo -e "${RED_TEXT}${PREFIXSTRING}${RESET_ATTS}${PROGNAME}: Error: ${1} - exiting" >&2
+    cleanup_and_exit_with_code 1
+}
+trap_cleanup() {
+    trap - SIGHUP SIGQUIT SIGINT SIGTERM SIGKILL EXIT
+    die "Caught signal"
+}
+trap trap_cleanup SIGHUP SIGQUIT SIGINT SIGTERM SIGKILL EXIT
+test_yn() {
+    echo -n -e "${SHOWPREFIX}${1} (y/n)? ${SHOWSUFFIX}"
+    read -r -n 1
+    echo
+    if [[ ${REPLY} =~ ^[Yy]$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+test_yn_need_enter() {
+    echo -n -e "${SHOWPREFIX}${1} (y/n)? ${SHOWSUFFIX}"
+    read -r
+    echo
+    if [[ ${REPLY} =~ ^[Yy]$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+continue_yn() {
+    if ! test_yn "${1}"; then
+        echo -e "${RED_TEXT}${PREFIXSTRING}${RESET_ATTS}Quitting" >&2
+        cleanup_and_exit_with_code 1
+    fi
+}
+suppress_colours() {
+    RED_TEXT=""
+    GREEN_TEXT=""
+    YELLOW_TEXT=""
+    RESET_ATTS==""
+    SHOWPREFIX="${PREFIXSTRING}"
+}
+suppress_colour_if_output_not_to_a_terminal() {
+    if [ ! -t 1 -o ! -t 2 ]; then
+        # we are going to a non-terminal
+        suppress_colours
+    fi
+}
+check_file_exists() {
+    if [ ! -f "${1}" ]; then
+        die "File '${1}' does not exist"
+    fi
+}
+mount_and_remember() {
+    local DEVPATH="${1}"
+    local MOUNTPOINT="${2}"
+    local TYPE=${3:-""}
+    
+    if [[ "${ALLMOUNTS[${MOUNTPOINT}]+_}" ]]; then
+        warning "Attempt to mount '${MOUNTPOINT}' more than once"
+    else
+        if [ -n "${TYPE}" ]; then
+            mount -t "${TYPE}" "${DEVPATH}" "${MOUNTPOINT}"
+        else
+            mount "${DEVPATH}" "${MOUNTPOINT}"
+        fi
+        # and remember we mounted it
+        ALLMOUNTS["${MOUNTPOINT}"]="${DEVPATH}"
+    fi
+}
+umount_and_forget() {
+    local MOUNTPOINT="${1}"
+    if [[ "${ALLMOUNTS[${MOUNTPOINT}]+_}" ]]; then
+        umount --lazy "${MOUNTPOINT}"
+        # and forget
+        unset -v "ALLMOUNTS[${MOUNTPOINT}]"
+    else
+        warning "Attempt to unmount '${MOUNTPOINT}', but not mounted"
+    fi
+}
+umount_all_remembered_mountpoints() {
+    local M ALLREMEMBEREDMOUNTS="${!ALLMOUNTS[@]}"
+    for M in ${ALLREMEMBEREDMOUNTS}; do
+        warning "Unmounting '${M}'"
+        umount_and_forget "${M}"
+    done
+}
+check_is_luks_volume() {
+    cryptsetup isLuks "${1}" || die "Partition with UUID '${1}' is not a LUKS volume"
+}
+partuuid_is_on_usb_device() {
+    local CANONPART="$(readlink --canonicalize "${1}")"
+    local NEXTPART NEXTCANONPART
+    for NEXTPART in "${IDDEVDIR}"/usb-*-part*; do
+        NEXTCANONPART="$(readlink --canonicalize "${NEXTPART}")"
+        if [ "${CANONPART}" = "${NEXTCANONPART}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+check_partuuid_exists() {
+    if [ ! -h "${PARTUUIDDEVDIR}/${1}" ]; then
+        die "Partition with UUID '${1}' does not exist"
+    fi
+}
+source_etc_conf_file() {
+    # get the variables the user must set, and any overrides
+    if [ ! -s "${CONFFILE}" ]; then
+        warning "${CONFFILE} does not exist"
+        if test_yn "Would you like to run --easy-setup now to fix this"; then
+            interactively_set_buildkernel_config
+            cleanup_and_exit_with_code 0
+        else
+            die "Cannot proceed; please create ${CONFFILE} manually"
+        fi
+    fi
+    source "${CONFFILE}"
+    # make sure the PARTUUIDs are lower case, if defined
+    if [[ -v EFIPARTUUID ]]; then
+        EFIPARTUUID="${EFIPARTUUID,,}"
+    fi
+    if [[ -v CRYPTPARTUUID ]]; then
+        CRYPTPARTUUID="${CRYPTPARTUUID,,}"
+    fi
+    if [[ -v KEYFILEPARTUUID ]]; then
+        KEYFILEPARTUUID="${KEYFILEPARTUUID,,}"
+    fi
+}
+setup_final_variables() {
+    # post-processing once buildkernel.conf loaded
+    # critical that EFIPARTUUID and CRYPTPARTUUID are defined...
+    if [ -z ${EFIPARTUUID+xxx} ]; then
+        warning "EFIPARTUUID not set in ${CONFFILE}"
+        if test_yn "Would you like to run --easy-setup now to fix this"; then
+            interactively_set_buildkernel_config
+            cleanup_and_exit_with_code 0
+        else
+            die "Cannot proceed; please edit ${CONFFILE} manually"
+        fi
+    fi
+    if [ -z ${CRYPTPARTUUID+xxx} ]; then
+        warning "CRYPTPARTUUID not set in ${CONFFILE}"
+        if test_yn "Would you like to run --easy-setup now to fix this"; then
+            interactively_set_buildkernel_config
+            cleanup_and_exit_with_code 0
+        else
+            die "Cannot proceed; please edit ${CONFFILE} manually"
+        fi
+    fi
+    if [ -n "${PLYMOUTHTHEME}" ] && ! "${USE_PLYMOUTH}"; then
+        warning "You have specified a PLYMOUTHTHEME, but ${PROGNAME} was emerged"
+        warning "without the plymouth use flag set - ignoring."
+        PLYMOUTHTHEME=""
+    fi
+    EFIPATHMAP="${PARTUUIDDEVDIR}/${EFIPARTUUID}"
+    CRYPTPATHMAP="${PARTUUIDDEVDIR}/${CRYPTPARTUUID}"
+    # assume keyfile is also on the EFI system partition, unless KEYFILEPARTUUID
+    # has been set explicitly in buildkernel.conf
+    KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
+    KEYFILEPATHMAP="${PARTUUIDDEVDIR}/${KEYFILEPARTUUID}"
+    # we use path syntax rather than "=PARTUUID=" syntax, as more reliable
+    KERNEL_CMD_LINE="root=${CMDLINE_ROOT} crypt_root=${CRYPTPATHMAP} dolvm "
+    KERNEL_CMD_LINE+="real_root=${CMDLINE_REAL_ROOT} rootfstype=${CMDLINE_ROOTFSTYPE} "
+    KERNEL_CMD_LINE+="real_init=${CMDLINE_REAL_INIT} "
+    if [ -n "${LUKSKEYFILE}" ]; then
+        KERNEL_CMD_LINE+="root_keydev=${KEYFILEPATHMAP} root_key=${LUKSKEYFILE} "
+    fi
+    KERNEL_CMD_LINE+="real_resume=${CMDLINE_REAL_RESUME} "
+    KERNEL_CMD_LINE+="keymap=${KEYMAP}"
+    if [ -n "${PLYMOUTHTHEME}" ]; then
+        KERNEL_CMD_LINE+=" quiet splash"
+    fi
+    if [ -n "${ADDITIONAL_KERNEL_CMDS}" ]; then
+        KERNEL_CMD_LINE+=" ${ADDITIONAL_KERNEL_CMDS}"
+    fi
+}
+check_if_booted_under_efi() {
+    if [ -d "/sys/firmware/efi" ]; then
+        USINGEFI=1
+    else
+        USINGEFI=0
+    fi
+}
+find_all_gpg_keyfile_partitions() {
+    # overwrites the variables GPGUUIDS, GPGPARTNAMES, GPGDEVNAMES and
+    # GPGPARTNUMS
+    # we only look for non-LUKS partitions on attached USB devices
+    # we don't mount to check that the file is there
+    GPGUUIDS=(); GPGPARTNAMES=(); GPGDEVNAMES=(); GPGPARTNUMS=()
+    local NEXTPART
+    for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
+        if ! cryptsetup isLuks "${NEXTPART}"; then
+            NEXTPART="${NEXTPART,,}"
+            local NEXTUUID="${NEXTPART##*/}"
+            local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+            if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
+                # assign results (Bash treats arrays as unset if not assigned a value)
+                GPGUUIDS=("${GPGUUIDS[@]:+${GPGUUIDS[@]}}" "${NEXTUUID}")
+                GPGPARTNAMES=("${GPGPARTNAMES[@]:+${GPGPARTNAMES[@]}}" "${NEXTPARTNAME}")
+                GPGDEVNAMES=("${GPGDEVNAMES[@]:+${GPGDEVNAMES[@]}}" "${NEXTDEVNAME}")
+                GPGPARTNUMS=("${GPGPARTNUMS[@]:+${GPGPARTNUMS[@]}}" "${NEXTPARTNUM}")
+            fi
+        fi
+    done
+}
+find_all_luks_partitions() {
+    # overwrites the variables LUKSUUIDS, LUKSPARTNAMES, LUKSDEVNAMES, 
+    # LUKSPARTNUMS and LUKSONUSBS
+    LUKSUUIDS=(); LUKSPARTNAMES=(); LUKSPARTNAMES=(); LUKSDEVNAMES=()
+    LUKSPARTNUMS=(); LUKSONUSBS=()
+    local NEXTPART
+    for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
+        if cryptsetup isLuks "${NEXTPART}"; then
+            NEXTPART="${NEXTPART,,}"
+            local NEXTUUID="${NEXTPART##*/}"
+            local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+            local NEXTONUSB="0"
+            if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
+                NEXTONUSB="1"
+            fi
+            # assign results (Bash treats arrays as unset if not assigned a value)
+            LUKSUUIDS=("${LUKSUUIDS[@]:+${LUKSUUIDS[@]}}" "${NEXTUUID}")
+            LUKSPARTNAMES=("${LUKSPARTNAMES[@]:+${LUKSPARTNAMES[@]}}" "${NEXTPARTNAME}")
+            LUKSDEVNAMES=("${LUKSDEVNAMES[@]:+${LUKSDEVNAMES[@]}}" "${NEXTDEVNAME}")
+            LUKSPARTNUMS=("${LUKSPARTNUMS[@]:+${LUKSPARTNUMS[@]}}" "${NEXTPARTNUM}")
+            LUKSONUSBS=("${LUKSONUSBS[@]:+${LUKSONUSBS[@]}}" "${NEXTONUSB}")
+        fi
+    done
+
+}
+find_all_efi_system_partitions() {
+    # overwrites the variables EFIUUIDS, EFIPARTNAMES, EFIDEVNAMES, 
+    # EFIPARTNUMS and EFIONUSBS
+    EFIUUIDS=(); EFIPARTNAMES=(); EFIPARTNAMES=(); EFIDEVNAMES=()
+    EFIPARTNUMS=(); EFIONUSBS=()
+    local NEXTPART
+    for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
+        NEXTPART="${NEXTPART,,}"
+        local NEXTUUID="${NEXTPART##*/}"
+        local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+        local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+        local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+        local NEXTONUSB="0"
+        if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
+            NEXTONUSB="1"
+        fi
+        if grep -qi 'EFI System' <(sgdisk --info "${NEXTPARTNUM}" "${NEXTDEVNAME}"); then
+            # assign results (Bash treats arrays as unset if not assigned a value)
+            EFIUUIDS=("${EFIUUIDS[@]:+${EFIUUIDS[@]}}" "${NEXTUUID}")
+            EFIPARTNAMES=("${EFIPARTNAMES[@]:+${EFIPARTNAMES[@]}}" "${NEXTPARTNAME}")
+            EFIDEVNAMES=("${EFIDEVNAMES[@]:+${EFIDEVNAMES[@]}}" "${NEXTDEVNAME}")
+            EFIPARTNUMS=("${EFIPARTNUMS[@]:+${EFIPARTNUMS[@]}}" "${NEXTPARTNUM}")
+            EFIONUSBS=("${EFIONUSBS[@]:+${EFIONUSBS[@]}}" "${NEXTONUSB}")
+        fi
+    done
+}
+find_all_efi_boot_entries() {
+    # overwrites the variables EBOOTIDS EBOOTNAMES EBOOTPATHS EBOOTUUIDS
+    # and EBOOTISACTIVES, EBOOTORDER
+    # and also HASWINBOOTLOADER and EBOOTIDTOINDEX
+    EBOOTIDS=(); EBOOTNAMES=(); EBOOTPATHS=(); EBOOTUUIDS=()
+    EBOOTISACTIVES=(); EBOOTORDER=()
+    local K ALLK="${!HASWINBOOTLOADER[@]}"
+    for K in ${ALLK}; do
+        unset -v "HASWINBOOTLOADER[${K}]"
+    done
+    ALLK="${!EBOOTIDTOINDEX[@]}"
+    for K in ${ALLK}; do
+        unset -v "EBOOTIDTOINDEX[${K}]"
+    done
+    if ((USINGEFI==0)); then
+        warning "This system wasn't booted under UEFI, cannot check boot entries"
+        return 0
+    fi
+    local NEXTLINE
+    declare -i NEXTINDEX=0
+    # only look for hard drive entries here
+    while read -r NEXTLINE; do
+        local NEXTID="${NEXTLINE:4:4}"
+        local NEXTSIG="${NEXTLINE:0:8}"
+        local NEXTISACTIVE="${NEXTLINE:8:1}"
+        if [[ "${NEXTISACTIVE}" == "*" ]]; then
+            NEXTISACTIVE="1"
+        else
+            NEXTISACTIVE="0"
+        fi
+        local NEXTUUID=$(egrep -o 'HD\([^(]*\)' <<<"${NEXTLINE}" | egrep -o '[[:xdigit:]]{8}(\-[[:xdigit:]]{4}){3}\-[[:xdigit:]]{12}')
+        local NEXTPATH=$(egrep -o 'File\([^(]*\)' <<<"${NEXTLINE}")
+        NEXTPATH="${NEXTPATH:5:-1}"
+        local NEXTNAME="$(efibootmgr | grep "^${NEXTSIG}" | cut -c11-)"
+        NEXTUUID="${NEXTUUID,,}"
+        # assign results (Bash treats arrays as unset if not assigned a value)
+        EBOOTIDS=("${EBOOTIDS[@]:+${EBOOTIDS[@]}}" "${NEXTID}")
+        EBOOTNAMES=("${EBOOTNAMES[@]:+${EBOOTNAMES[@]}}" "${NEXTNAME}")
+        EBOOTPATHS=("${EBOOTPATHS[@]:+${EBOOTPATHS[@]}}" "${NEXTPATH}")
+        EBOOTUUIDS=("${EBOOTUUIDS[@]:+${EBOOTUUIDS[@]}}" "${NEXTUUID}")
+        EBOOTISACTIVES=("${EBOOTISACTIVES[@]:+${EBOOTISACTIVES[@]}}" "${NEXTISACTIVE}")
+        # archive whether or not this is a windows bootloader entry
+        # there can be >1 entry for the same UUID, so this acts like a
+        # 'dirty' flag
+        if grep -i -q "Windows" <<<"${NEXTNAME}"; then
+            HASWINBOOTLOADER["${NEXTUUID}"]="1"
+        fi
+        # store a lookup from boot ID (4 digit hex string) to index in these
+        # arrays
+        EBOOTIDTOINDEX["${NEXTID}"]="${NEXTINDEX}"
+        NEXTINDEX=$((NEXTINDEX+1))
+    done < <(efibootmgr -v | grep '^Boot0[^ ]*.*HD([^\)]*)')
+    # now extract the boot order, and save it into EBOOTORDER in ascending order
+    EBOOTORDER=($(efibootmgr | grep '^BootOrder' | sed 's/BootOrder: //g;s/,/ /g'))
+    EFIBOOTENTRIESSEARCHED=1
+}
+archive_current_config_variables() {
+    local NEXTVAR
+    for NEXTVAR in "${PROCVARS[@]}"; do
+        if [[ -v "${NEXTVAR}" ]] ; then
+            eval "OLD_${NEXTVAR}"="${!NEXTVAR}"
+        else
+            unset -v "OLD_${NEXTVAR}"
+        fi
+    done
+}
+warn_if_buildkernel_config_incomplete() {
+    declare -i WILLRUN=1
+    if [[ ! -v EFIPARTUUID ]]; then
+        warning "EFIPARTUUID not set in ${CONFFILE}"
+        WILLRUN=0
+    fi
+    if [[ ! -v CRYPTPARTUUID ]]; then
+        warning "CRYPTPARTUUID not set in ${CONFFILE}"
+        WILLRUN=0
+    fi
+    if ((WILLRUN==0)); then
+        warning "${PROGNAME} cannot create a kernel until you fix this"
+    fi
+}
+interactively_set_buildkernel_config() {
+    find_all_gpg_keyfile_partitions
+    find_all_luks_partitions
+    find_all_efi_system_partitions
+    find_all_efi_boot_entries
+    archive_current_config_variables
+    declare -i DOSAVE=0 DOEXIT=0
+    declare -a TOPMENU=("Set EFI system partition" "Set LUKS root partition" \
+        "Set LUKS key options" "Set EFI boot file path"\
+        "Set boot splash options" "Set boot-time keymap" \
+        "Exit without saving" "Save and exit")
+    local X
+    PS3="Your choice: "
+    until ((DOEXIT==1)); do
+        show_current_key_config_status
+        show "Please choose an option:"
+        select X in "${TOPMENU[@]}"; do
+            printf "\n"
+            case "${X}" in
+                "Set EFI system partition") set_efi_system_partition; break ;;
+                "Set LUKS root partition") set_luks_root_partition; break ;;
+                "Set LUKS key options") set_luks_key_options; break ;;
+                "Set EFI boot file path") set_efi_boot_file_path; break ;;
+                "Set boot splash options") set_boot_splash_options; break ;;
+                "Set boot-time keymap") set_boot_time_keymap; break ;;
+                "Exit without saving") DOEXIT=1; break ;;
+                "Save and exit") DOSAVE=1; DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+        if ((DOEXIT==1 && DOSAVE==0 && CONFIGDIRTY==1)); then
+            if ! test_yn_need_enter "Are you sure? Your changes will be lost. Proceed"; then
+                DOEXIT=0
+            fi 
+        fi
+    done
+    if ((DOSAVE==0)); then
+        if ((CONFIGDIRTY==1)); then
+            warning "As instructed, your changes were not saved!"
+        else
+            show "Configuration unchanged."
+        fi
+    else
+        # user wants to save
+        if ((CONFIGDIRTY==1)); then
+            save_buildkernel_config
+            show "Configuration saved to ${CONFFILE}."
+            show "Be sure to run ${PROGNAME}, to rebuild the kernel with the new"
+            show "settings, before rebooting."
+        else
+            show "Configuration is unchanged, nothing to save."
+        fi
+        warn_if_efi_boot_file_clashes_with_windows_bootloader
+        warn_if_buildkernel_config_incomplete
+    fi
+}
+save_buildkernel_config() {
+    local NEXTVAR NEXTDEFAULTVAR
+    # ensure any existing definitions are commented out
+    for NEXTVAR in "${PROCVARS[@]}"; do
+        sed -i "/^${NEXTVAR}=/s/^/# /" "${CONFFILE}"
+    done
+    # get rid of the existing 'auto' section, if there is one
+    sed -i '/^# Automatically added by '"${PROGNAME}"' - edits here may be overwritten/,/^# End of automatically added section/d' "${CONFFILE}"
+    # now append remaining vars to end
+    printf "# Automatically added by ${PROGNAME} - edits here may be overwritten\n" >> "${CONFFILE}"
+    for NEXTVAR in "${PROCVARS[@]}"; do
+        if [[ -v "${NEXTVAR}" ]] ; then
+            # don't write out anything if we have the default value set anyway
+            NEXTDEFAULTVAR="DEFAULT${NEXTVAR}"
+            if [[ -v "${NEXTDEFAULTVAR}" && "${!NEXTVAR}" == "${!NEXTDEFAULTVAR}" ]] ; then
+                continue
+            fi
+            printf "${NEXTVAR}=\"${!NEXTVAR}\"\n" >> "${CONFFILE}"
+        fi
+    done
+    printf "# End of automatically added section\n" >> "${CONFFILE}"
+    # copy the keyfile, if location or path has changed
+    if [[ -v OLD_LUKSKEYFILE && -v LUKSKEYFILE  && \
+        ( -v OLD_EFIPARTUUID || -v OLD_KEYFILEPARTUUID ) ]]; then
+        local OLD_ACTUAL_KEYFILEPARTUUID="${OLD_KEYFILEPARTUUID:-${OLD_EFIPARTUUID}}"
+        local ACTUAL_KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
+        if [[ -n "${LUKSKEYFILE}" && -n "${OLD_LUKSKEYFILE}" && \
+            ( "${ACTUAL_KEYFILEPARTUUID}" != "${OLD_ACTUAL_KEYFILEPARTUUID}" || \
+              "${LUKSKEYFILE}" != "${OLD_LUKSKEYFILE}" ) ]]; then
+            show "Your LUKS keyfile location has changed:"
+            show "Old PARTUUID: ${OLD_ACTUAL_KEYFILEPARTUUID}, filename: '${OLD_LUKSKEYFILE}'"
+            show "New PARTUUID: ${ACTUAL_KEYFILEPARTUUID}, filename: '${LUKSKEYFILE}'"
+            if test_yn_need_enter "Would you like to copy the keyfile across now"; then
+                copy_file_from_partition_to_partition \
+                    "${OLD_ACTUAL_KEYFILEPARTUUID}" "/${OLD_LUKSKEYFILE}" \
+                    "${ACTUAL_KEYFILEPARTUUID}" "/${LUKSKEYFILE}" \
+                    "keyfile copied successfully (original retained)" \
+                    "Error copying keyfile - please copy manually"
+            else
+                warning "File not copied"
+                warning "Please ensure '${LUKSKEYFILE}' available on"
+                warning "partition ${ACTUAL_KEYFILEPARTUUID}"
+                warning "before attempting to reboot"
+            fi
+        fi
+    fi
+    # it may be dangerous to leave /boot/efi mounted, if the user has
+    # changed its location, so unmount it now if necessary
+    if mount | grep -q " ${EFIROOTDIR} " > /dev/null; then
+        show "Unmounting ${EFIROOTDIR} for safety"
+        umount_and_forget "${EFIROOTDIR}"
+    fi
+}
+set_efi_system_partition() {
+    declare -i DOEXIT=0 NUMEFIPARTS="${#EFIUUIDS[@]}"
+    local NUMREG='^[0-9]+$'
+    until ((DOEXIT==1)); do
+        show "Please choose which EFI system partition to use (or GO BACK):"
+        show_efi_system_partitions "GO BACK"
+        printf "%s" "${PS3}"
+        local N
+        read -r N
+        if [[ "${N}" =~ ${NUMREG} ]]; then
+            if ((N>=1 && N<=NUMEFIPARTS)); then
+                # valid partition, set it
+                if [[ -v EFIPARTUUID ]]; then
+                    if [[ "${EFIPARTUUID}" != "${EFIUUIDS[$((N-1))]}" ]]; then
+                        CONFIGDIRTY=1;
+                    fi
+                else
+                    CONFIGDIRTY=1;
+                fi
+                EFIPARTUUID="${EFIUUIDS[$((N-1))]}"
+                DOEXIT=1;
+                show "EFI system partition selected as follows:"
+                show_efi_system_partitions
+                warn_if_efi_boot_file_clashes_with_windows_bootloader
+                make_key_file_location_expicit_if_necessary_and_wanted
+            elif ((N==1+NUMEFIPARTS)); then
+                DOEXIT=1;
+            fi
+        fi
+        if ((DOEXIT==0)); then
+            warning "Please choose one of the menu options!"
+        fi
+    done
+}
+set_luks_root_partition() {
+    declare -i DOEXIT=0 NUMLUKSPARTS="${#LUKSUUIDS[@]}"
+    local NUMREG='^[0-9]+$'
+    until ((DOEXIT==1)); do
+        show "Please choose which LUKS partition contains the root LVM logical volume:"
+        show_luks_partitions "GO BACK"
+        printf "%s" "${PS3}"
+        local N
+        read -r N
+        if [[ "${N}" =~ ${NUMREG} ]]; then
+            if ((N>=1 && N<=NUMLUKSPARTS)); then
+                # valid partition, set it
+                if [[ -v CRYPTPARTUUID ]]; then
+                    if [[ "${CRYPTPARTUUID}" != "${LUKSUUIDS[$((N-1))]}" ]]; then
+                        CONFIGDIRTY=1;
+                    fi
+                else
+                    CONFIGDIRTY=1;
+                fi
+                CRYPTPARTUUID="${LUKSUUIDS[$((N-1))]}"
+                DOEXIT=1;
+                show "LUKS partition selected as follows:"
+                show_luks_partitions
+            elif ((N==1+NUMLUKSPARTS)); then
+                DOEXIT=1;
+            fi
+        fi
+        if ((DOEXIT==0)); then
+            warning "Please choose one of the menu options!"
+        fi
+    done
+}
+show_current_key_config_status() {
+    # main things we need are: EFIPARTUUID, CRYPTPARTUUID, KEYFILEPARTUUID
+    # LUKSKEYFILE, EFIBOOTDIR, EFIBOOTFILE, PLYMOUTHTHEME and KEYMAP
+    local MODFLAG=""
+    if ((CONFIGDIRTY==1)); then
+        MODFLAG=" - MODIFIED"
+    fi
+    printf "\n"
+    show "Current configuration (from ${CONFFILE}${MODFLAG}):"
+    printf "\n"
+    printf "  EFI system partition UUID:  %-36s\n" "${EFIPARTUUID:-NEEDS SETTING}"
+    printf "  LUKS root partition UUID:   %-36s\n" "${CRYPTPARTUUID:-NEEDS SETTING}"
+    printf "  GPG keyfile partition UUID: %-36s\n" "${KEYFILEPARTUUID:-DEFAULT (=EFI system partition UUID)}"
+    printf "  GPG keyfile (for LUKS):     %-36s\n" "${LUKSKEYFILE:-NONE (using fallback passphrase)}"
+    printf "  EFI boot directory:         %-36s\n" "${EFIBOOTDIR:-NEEDS SETTING}"
+    printf "  EFI boot file:              %-36s\n" "${EFIBOOTFILE:-NEEDS SETTING}"
+    printf "  Plymouth theme              %-36s\n" "${PLYMOUTHTHEME:-NONE (textual boot)}"
+    printf "  Boot-time keymap            %-36s\n" "${KEYMAP:-NEEDS SETTING}"
+    printf "\n"
+}
+show_gpg_keyfile_partitions() {
+    local LASTITEM=${1:-""}
+    declare -i I=0 NUMGPGPARTS="${#GPGUUIDS[@]}"
+    if ((NUMGPGPARTS==0)); then
+        show "No potential keyfile partitions found on your machine"
+    else
+        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "Partition UUID" "Path" "Use"
+        printf "%s\n" "--- ------------------------------------ ---------- ---"
+        for I in "${!GPGUUIDS[@]}"; do
+            local INUSE="[ ]"
+            if [[ ${KEYFILEPARTUUID:-""} == "${GPGUUIDS[$I]}" ]]; then
+                INUSE="[*]"
+            fi
+            printf "%2d) %-36s %-10s %3s\n" $((I+1)) "${GPGUUIDS[$I]}" \
+                "${GPGPARTNAMES[$I]}" "${INUSE}"
+        done
+    fi
+    if [ -n "${LASTITEM}" ]; then
+        printf "%2d) %s\n" $((NUMGPGPARTS+1)) "${LASTITEM}"
+    fi
+}
+show_luks_partitions() {
+    local LASTITEM=${1:-""}
+    declare -i I=0 NUMLUKSPARTS="${#LUKSUUIDS[@]}"
+    if ((NUMLUKSPARTS==0)); then
+        die "No LUKS partitions found on your machine"
+    else
+        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "Partition UUID" "Path" "USB" "Use"
+        printf "%s\n" "--- ------------------------------------ ---------- --- ---"
+        for I in "${!LUKSUUIDS[@]}"; do
+            local ISUSB=" N "
+            local INUSE="[ ]"
+            if ((${LUKSONUSBS[$I]}==1)); then
+                ISUSB=" Y "
+            fi
+            if [[ ${CRYPTPARTUUID:-""} == "${LUKSUUIDS[$I]}" ]]; then
+                INUSE="[*]"
+            fi
+            printf "%2d) %-36s %-10s %-3s %3s\n" $((I+1)) "${LUKSUUIDS[$I]}" \
+                "${LUKSPARTNAMES[$I]}" "${ISUSB}" "${INUSE}"
+        done
+    fi
+    if [ -n "${LASTITEM}" ]; then
+        printf "%2d) %s\n" $((NUMLUKSPARTS+1)) "${LASTITEM}"
+    fi
+}
+show_efi_system_partitions() {
+    local LASTITEM=${1:-""}
+    declare -i I=0 NUMEFIPARTS="${#EFIUUIDS[@]}"
+    if ((NUMEFIPARTS==0)); then
+        die "No EFI system partitions found on your machine"
+    else
+        printf "%3s %-36s %-10s %-3s %-3s %3s\n" "Num" "Partition UUID" "Path" "USB" "Win" "Use"
+        printf "%s\n" "--- ------------------------------------ ---------- --- --- ---"
+        for I in "${!EFIUUIDS[@]}"; do
+            local ISUSB=" N "
+            local INUSE="[ ]"
+            local ISWIN=" N "
+            local NEXTUUID="${EFIUUIDS[$I]}"
+            if ((${EFIONUSBS[$I]}==1)); then
+                ISUSB=" Y "
+            fi
+            if [[ ${EFIPARTUUID:-""} == "${NEXTUUID}" ]]; then
+                INUSE="[*]"
+            fi
+            if ((USINGEFI==0)); then
+                ISWIN="???"
+            elif [[ "${HASWINBOOTLOADER[${NEXTUUID}]+_}" && "${HASWINBOOTLOADER[${NEXTUUID}]}" == "1" ]]; then
+                ISWIN=" Y "
+            fi
+            printf "%2d) %-36s %-10s %-3s %-3s %3s\n" $((I+1)) "${EFIUUIDS[$I]}" \
+                "${EFIPARTNAMES[$I]}" "${ISUSB}" "${ISWIN}" "${INUSE}"
+        done
+    fi
+    if [ -n "${LASTITEM}" ]; then
+        printf "%2d) %s\n" $((NUMEFIPARTS+1)) "${LASTITEM}"
+    fi
+}
+show_luks_key_status() {
+    if [ -n "${LUKSKEYFILE}" ]; then
+        show "Using a GPG-encrypted keyfile for LUKS:"
+        if [[ ! -v KEYFILEPARTUUID ]]; then
+            show " KEYFILEPARTUUID unset: assuming GPG keyfile on EFI system partition"
+        else
+            show " KEYFILEPARTUUID is currently set to '${KEYFILEPARTUUID}'"
+        fi
+    else
+        show "Using no keyfile, but relying on fallback passphrase for LUKS"
+    fi
+}
+show_efi_boot_file_status() {
+    show "EFI boot file path: ${EFIBOOTDIR}/${EFIBOOTFILE}"
+    show " (under EFI system partition mountpoint)"
+    warn_if_efi_boot_file_clashes_with_windows_bootloader
+}
+show_boot_splash_status() {
+    if [ -n "${PLYMOUTHTHEME}" ]; then
+        show "Using Plymouth on boot, with theme '${PLYMOUTHTHEME}'"
+        if [ ! "${USE_PLYMOUTH}" ]; then
+            warning "${PROGNAME} has been emerged without the plymouth use flag"
+            warning "so this setting will be ignored"
+        fi
+    else
+        show "Using textual boot (no Plymouth)"
+    fi
+}
+set_luks_key_options() {
+    local -i DOEXIT=0
+    declare -a LUKSKEYMENU=("Use GPG-encrypted keyfile on EFI system partition" \
+        "Use GPG-encrypted keyfile on specific USB partition..." \
+        "Use fallback passphrase (no keyfile)"  "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Current LUKS key settings:"
+        show_luks_key_status
+        show "Please choose your desired LUKS key setting (or GO BACK):"
+        select X in "${LUKSKEYMENU[@]}"; do
+            case "${X}" in
+                "Use GPG-encrypted keyfile on EFI system partition")
+                    if [[ "${LUKSKEYFILE}" != "${DEFAULTLUKSKEYFILE}" || -v KEYFILEPARTUUID ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    LUKSKEYFILE="${DEFAULTLUKSKEYFILE}"
+                    unset -v KEYFILEPARTUUID
+                    show "New LUKS key settings:"
+                    show_luks_key_status
+                    DOEXIT=1
+                    break ;;
+                "Use GPG-encrypted keyfile on specific USB partition...")
+                    set_luks_keyfile_partition
+                    DOEXIT=1
+                    break ;;
+                "Use fallback passphrase (no keyfile)")
+                    if [ -n LUKSKEYFILE ]; then
+                        CONFIGDIRTY=1
+                    fi
+                    LUKSKEYFILE=""
+                    show "New LUKS key settings:"
+                    show_luks_key_status
+                    DOEXIT=1
+                    break ;;
+                "GO BACK") DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+    done
+}
+set_luks_keyfile_partition() {
+    declare -i DOEXIT=0 NUMGPGPARTS="${#GPGUUIDS[@]}"
+    local NUMREG='^[0-9]+$'
+    until ((DOEXIT==1)); do
+        if ((NUMGPGPARTS==0)); then
+            warning "No potential keyfile partitions found on your machine"
+            warning "(only non-LUKS partitions on USB devices are allowed)"
+            warning "Please insert any devices before running ${PROGNAME}"
+            return 0
+        fi
+        show "Please choose which partition contains the GPG keyfile for LUKS:"
+        show " (only non-LUKS partitions on USB devices are shown below)"
+        show_gpg_keyfile_partitions "GO BACK"
+        printf "%s" "${PS3}"
+        local N
+        read -r N
+        if [[ "${N}" =~ ${NUMREG} ]]; then
+            if ((N>=1 && N<=NUMGPGPARTS)); then
+                # valid partition, set it
+                if [[ -v KEYFILEPARTUUID ]]; then
+                    if [[ "${KEYFILEPARTUUID}" != "${GPGUUIDS[$((N-1))]}" ]]; then
+                        CONFIGDIRTY=1;
+                    fi
+                else
+                    CONFIGDIRTY=1;
+                fi
+                if [[ "${LUKSKEYFILE}" != "${DEFAULTLUKSKEYFILE}" ]]; then
+                    CONFIGDIRTY=1
+                fi
+                LUKSKEYFILE="${DEFAULTLUKSKEYFILE}"
+                KEYFILEPARTUUID="${GPGUUIDS[$((N-1))]}"
+                DOEXIT=1;
+                show "GPG partition selected as follows:"
+                show_gpg_keyfile_partitions
+                if [[ -v EFIPARTUUID && "${EFIPARTUUID}" == "${KEYFILEPARTUUID}" ]]; then
+                    show "The partition you have selected is also the current EFI system partition"
+                    show "You can choose this explicitly in the LUKS key options menu, if you like"
+                    show "(unless you intend to change the EFI system partition now)"
+                fi
+                # check if EFIPARTUUID is set and same; if so, notify user
+                # and clear the KEYFILEPARTUUID variable
+            elif ((N==1+NUMGPGPARTS)); then
+                DOEXIT=1;
+            fi
+        fi
+        if ((DOEXIT==0)); then
+            warning "Please choose one of the menu options!"
+        fi
+    done
+}
+set_boot_time_keymap() {
+    declare -i DOEXIT=0
+    declare -a KEYMAPLIST=("azerty" "be" "bg" "br-a" "br-l" "by" "cf" "croat" \
+        "cz" "de" "dk" "dvorak" "es" "et" "fi" "fr" "gr" "hu" "il" "is" "it" \
+        "jp" "la" "lt" "mk" "nl" "no" "pl" "pt" "ro" "ru" "se" "sg" "sk-y" \
+        "sk-z" "slovene" "trf" "trq" "ua" "uk" "us" "wangbe" "sf")
+    declare -a KEYMAPMENU=("${KEYMAPLIST[@]}" "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Please choose your desired boot-time keymap (or GO BACK):"
+        show "Boot-time keymap is currently '${KEYMAP}'"
+        select X in "${KEYMAPMENU[@]}"; do
+            if [[ ${KEYMAPLIST[@]} =~ (^| )"${X}"($| ) ]]; then
+                # valid keymap, set it
+                if [[ "${KEYMAP}" != "${X}" ]]; then
+                    CONFIGDIRTY=1;
+                fi
+                KEYMAP="${X}"
+                DOEXIT=1;
+                show "Keymap selected to be '${KEYMAP}'"
+            elif [[ "${X}" == "GO BACK" ]]; then
+                DOEXIT=1;
+            else
+                warning "Please choose one of the menu options!"
+            fi
+            break
+        done
+    done
+}
+set_efi_boot_file_path() {
+    # we only present a simplified choice here
+    local -i DOEXIT=0
+    declare -a EFIBOOTFILEMENU=("Use /EFI/Boot/bootx64.efi (recommended for initial USB install)" \
+        "Use /EFI/Microsoft/Boot/bootmgfw.efi (fallback for certain systems)" \
+        "Use /EFI/Boot/gentoo.efi (recommended for post-install use)" "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Current EFI boot file setting:"
+        show_efi_boot_file_status
+        show "Please choose your desired EFI boot file setting (or GO BACK):"
+        select X in "${EFIBOOTFILEMENU[@]}"; do
+            case "${X}" in
+                "Use /EFI/Boot/bootx64.efi (recommended for initial USB install)")
+                    if [[ "${EFIBOOTDIR}" != "/EFI/Boot" || "${EFIBOOTFILE}" != "bootx64.efi" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    EFIBOOTDIR="/EFI/Boot"
+                    EFIBOOTFILE="bootx64.efi"
+                    show "New EFI boot file setting:"
+                    show_efi_boot_file_status
+                    DOEXIT=1
+                    break ;;
+                "Use /EFI/Microsoft/Boot/bootmgfw.efi (fallback for certain systems)")
+                    if [[ "${EFIBOOTDIR}" != "/EFI/Microsoft/Boot" || "${EFIBOOTFILE}" != "bootmgfw.efi" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    EFIBOOTDIR="/EFI/Microsoft/Boot"
+                    EFIBOOTFILE="bootmgfw.efi"
+                    show "New EFI boot file setting:"
+                    show_efi_boot_file_status
+                    DOEXIT=1
+                    break ;;
+                "Use /EFI/Boot/gentoo.efi (recommended for post-install use)")
+                    if [[ "${EFIBOOTDIR}" != "/EFI/Boot" || "${EFIBOOTFILE}" != "gentoo.efi" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    EFIBOOTDIR="/EFI/Boot"
+                    EFIBOOTFILE="gentoo.efi"
+                    show "New EFI boot file setting:"
+                    show_efi_boot_file_status
+                    DOEXIT=1
+                    break ;;
+                "GO BACK") DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+    done
+}
+set_boot_splash_options() {
+    # we only present a simplified choice here
+    local -i DOEXIT=0
+    declare -a BOOTSPLASHMENU=("Use textual boot (no Plymouth)" \
+        "Use Plymouth graphical boot splash ('fade-in')" "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Current boot splash settings:"
+        show_boot_splash_status
+        show "Please choose your desired boot splash setting (or GO BACK):"
+        select X in "${BOOTSPLASHMENU[@]}"; do
+            case "${X}" in
+                "Use textual boot (no Plymouth)")
+                    if [ -n "${PLYMOUTHTHEME}" ]; then
+                        CONFIGDIRTY=1
+                    fi
+                    PLYMOUTHTHEME=""
+                    show "New boot splash settings:"
+                    show_boot_splash_status
+                    DOEXIT=1
+                    break ;;
+                "Use Plymouth graphical boot splash ('fade-in')")
+                    if [[ "${PLYMOUTHTHEME}" != "fade-in" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    PLYMOUTHTHEME="fade-in"
+                    show "New boot splash settings:"
+                    show_boot_splash_status
+                    DOEXIT=1
+                    break ;;
+                "GO BACK") DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+    done
+}
+warn_if_efi_boot_file_clashes_with_windows_bootloader() {
+    # we check if our (slash-modified) path + PARTUUID matches any in the
+    # existing EFI boot list, which are flagged as being 'windows' boots
+    local SMBOOTPATH="${EFIBOOTDIR}/${EFIBOOTFILE}"
+    SMBOOTPATH="${SMBOOTPATH//\//\\}" # map to backslash separators
+    declare -i FOUNDCLASH=0 I
+    for I in "${!EBOOTUUIDS[@]}"; do
+        if [[ "${EBOOTUUIDS[$I]}" == "${EFIPARTUUID}" && \
+            "${EBOOTPATHS[$I]}" == "${SMBOOTPATH}" && \
+            "${EBOOTNAMES[$I],,}" == "windows"* ]]; then
+            FOUNDCLASH=1
+            break
+        fi
+    done
+    if ((FOUNDCLASH==1)); then
+        warning "Your EFI boot file pathname clashes with at least one"
+        warning "Windows bootloader in the EFI boot list; consider"
+        warning "changing it to /EFI/Boot/gentoo.efi for safety"
+        warning "(as otherwise, the Windows bootloader may be overwritten)"
+    fi
+}
+make_key_file_location_expicit_if_necessary_and_wanted() {
+    # whenever the EFIPARTUUID is changed, it is possible that an (implicitly
+    # defined) KEYFILEPARTUUID should then become explicit - so do this if
+    # need be (and warn if so)
+    if [[ ! -v KEYFILEPARTUUID && ! -v OLD_KEYFILEPARTUUID && -v EFIPARTUUID &&  \
+        -n "${LUKSKEYFILE}" && -n "${OLD_LUKSKEYFILE}" ]]; then
+        # key file location implicit, and was implicit on entry, but EFI location defined
+        if [[ -v OLD_EFIPARTUUID && "${EFIPARTUUID}" != "${OLD_EFIPARTUUID}" ]]; then
+            show "Previously, KEYFILEPARTUUID was unset, and so implicitly followed"
+            show "the value of EFIPARTUUID (the EFI system partition)."
+            show "Now you have changed EFIPARTUUID, you must choose what to do"
+            show "about the keyfile."
+            
+            local -i DOEXIT=0
+            declare -a KEYFILEMENU=("Keep keyfile in previous EFI system partition" \
+                "Move keyfile to new EFI system partition (retain implicit tracking)")
+            local X
+            until ((DOEXIT==1)); do
+                show "Please choose your desired option:"
+                select X in "${KEYFILEMENU[@]}"; do
+                    case "${X}" in
+                        "Keep keyfile in previous EFI system partition")
+                            show "OK, explicitly defining KEYFILEPARTUUID now"
+                            KEYFILEPARTUUID="${OLD_EFIPARTUUID}"
+                            DOEXIT=1
+                            break ;;
+                        "Move keyfile to new EFI system partition (retain implicit tracking)")
+                            show "OK, the init scripts will look for the keyfile in the newly"
+                            show "specified EFI system partition now (once you rebuild the kernel)"
+                            show "You will asked whether to physically copy over the keyfile"
+                            show "when you select 'Save and exit' from the main menu" 
+                            DOEXIT=1
+                            break ;;
+                        *) warning "Please choose one of the menu options!"; break ;;
+                    esac
+                done
+            done
+        fi
+    fi
+}
+copy_file_from_partition_to_partition() {
+    # used to copy files from one partition to another
+    # prints a warning only if not successful (you can specify text of this)
+    # if mounted on entry, a partition will remain so on exit
+    # if unmounted on entry, the partition will be unmounted again on exit
+    local FROMPARTUUID="${1,,}"
+    local FROMPATH="${2}" # path relative to mountpoint, starting with /
+    local TOPARTUUID="${3,,}"
+    local TOPATH="${4}" # path relative to mountpoint, starting with /
+    local ONSUCCESSTEXT="${5}"
+    local ONERRORTEXT="${6}"
+    local COPYFLAGS=${7:-"--force"}
+    declare -i FROMPARTMOUNTEDONENTRY=0 TOPARTMOUNTEDONENTRY=0
+    declare -i DIDMOUNTFROM=0 DIDMOUNTTO=0
+    # both of these UUIDs need to be in the /dev/disk/by-partuuid list
+    # or it's no go
+    local FROMEFIPARTPATH="${PARTUUIDDEVDIR}/${FROMPARTUUID}"
+    local TOEFIPARTPATH="${PARTUUIDDEVDIR}/${TOPARTUUID}"
+    if [[ ! -e "${FROMEFIPARTPATH}" || ! -e "${TOEFIPARTPATH}" ]]; then
+        warning "${ONERRORTEXT}"
+        return 0
+    fi
+    local FROMPARTNAME="$(readlink --canonicalize "${FROMEFIPARTPATH}")" # e.g. /dev/sda3
+    local TOPARTNAME="$(readlink --canonicalize "${TOEFIPARTPATH}")" # e.g. /dev/sdb3
+    local ALLMOUNTEDPARTS="$(df -P)"
+    local FROMMOUNT="$(grep "^${FROMPARTNAME}" <<<"${ALLMOUNTEDPARTS}" | perl -pe 's/^(\S+\s+){5}//')" 
+    local TOMOUNT="$(grep "^${TOPARTNAME}" <<<"${ALLMOUNTEDPARTS}" | perl -pe 's/^(\S+\s+){5}//')"
+    if [ -n "${FROMMOUNT}" ]; then
+        FROMPARTMOUNTEDONENTRY=1
+    fi
+    if [ -n "${TOMOUNT}" ]; then
+        TOPARTMOUNTEDONENTRY=1
+    fi
+    if ((FROMPARTMOUNTEDONENTRY==0)); then
+        FROMMOUNT=$(mktemp -d)
+        if mount_and_remember "${FROMPARTNAME}" "${FROMMOUNT}"; then
+            DIDMOUNTFROM=1
+        else
+            warning "Failed to mount ${FROMPARTNAME}"
+        fi
+    fi
+    if ((TOPARTMOUNTEDONENTRY==0)); then
+        if [[ "${FROMPARTUUID}" != "${TOPARTUUID}" ]]; then
+            TOMOUNT=$(mktemp -d)
+            if mount_and_remember "${TOPARTNAME}" "${TOMOUNT}"; then
+                DIDMOUNTTO=1
+            else
+                warning "Failed to mount ${TOPARTNAME}"
+            fi
+        else
+            TOMOUNT="${FROMMOUNT}"
+        fi
+    fi
+    local TODIR="$(dirname "${TOPATH}")"
+    if [[ "${TODIR}" != "/" ]]; then
+        # ensure parent directories exist
+        mkdir --parents --verbose "${TOMOUNT}${TODIR}"
+    fi
+    
+    cp ${COPYFLAGS} "${FROMMOUNT}${FROMPATH}" "${TOMOUNT}${TOPATH}" && \
+        show "${ONSUCCESSTEXT}" || warning "${ONERRORTEXT}"
+    sync
+    # now unmount, if we mounted
+    if ((DIDMOUNTTO==1)); then
+        umount_and_forget "${TOMOUNT}"
+        rmdir "${TOMOUNT}"
+    fi
+    if ((DIDMOUNTFROM==1)); then
+        umount_and_forget "${FROMMOUNT}"
+        rmdir "${FROMMOUNT}"
+    fi
+}
+ask_whether_to_proceed() {
+    show "Secure-bootable EFI kernel build script"
+    check_partuuid_exists "${CRYPTPARTUUID}"
+    check_is_luks_volume "${CRYPTPATHMAP}"
+    if ((ARG_COPYFROMSTAGING==1)); then
+        show "Will copy built kernel from ${BOOTDIR} to ${FULLEFIBOOTDIR}"
+    else
+        show "Will build ${NEWVERSION}; running kernel is ${CURRENTVERSION}"
+        if ((ARG_STAGEONLY)); then
+            show "(will build in ${BOOTDIR} (staging) only)"
+        fi
+    fi
+    # if in non-interactive mode, proceed automatically
+    if ((ARG_ASK==1)); then
+        continue_yn "Do you want to proceed"
+    fi
+}
+conform_efi_boot_order_if_possible() {
+    # checks if we have been booted under UEFI, and, if so, whether or not
+    # the EFIBOOTNAME is present, accurate, active, and at the top of the boot
+    # order; if all these conditions are met, does nothing, otherwise, deletes
+    # any old (clashing) entry for the EFIBOOTNAME, and inserts a new one
+    # (which automatically starts off active and at the top of the list)
+    if ((USINGEFI==0)); then
+        warning "Your system is not currently booted under EFI"
+        warning "As such, unable to set EFI stub kernel in boot list"
+        if [[ ( "${EFIBOOTFILE}" == "bootx64.efi" && "${EFIBOOTDIR}" ==  "/EFI/Boot" ) || \
+            ( "${EFIBOOTFILE}" == "bootmgfw.efi" && "${EFIBOOTDIR}" == "/EFI/Microsoft/Boot" ) ]]; then
+            warning "Manually select device using BIOS, to boot this kernel"
+            if [[ "${EFIBOOTFILE}" == "bootx64.efi" ]]; then
+                warning "If unsuccessful, try using /EFI/Microsoft/Boot/bootmgfw.efi instead"
+            else
+                warning "If unsuccessful, try using /EFI/Boot/bootx64.efi instead"
+            fi
+        else
+            warning "Non-standard boot path specified!"
+            warning "Manually select boot file using BIOS or EFI shell"
+        fi
+        # nothing more we can do
+        return 0
+    fi
+    if ((EFIBOOTENTRIESSEARCHED==0)); then
+        find_all_efi_boot_entries
+    fi
+    # are we already at the top?
+    declare -i NEWBOOTENTRYNEEDED=1
+    local SMBOOTPATH="${EFIBOOTDIR}/${EFIBOOTFILE}"
+    # locate the EFIPARTUUID, if possible
+    local EFIPARTPATH="${PARTUUIDDEVDIR}/${EFIPARTUUID}"
+    if [ ! -e "${EFIPARTPATH}" ]; then
+        warning "EFIPARTUUID (${EFIPARTUUID}) not found on system"
+        warning "Cannot conform EFI boot list"
+        warning "Ensure EFIPARTUUID is correct, USB device (if appropriate) is"
+        warning "inserted, and try again"
+        # nothing more we can do
+        return 0
+    fi
+    # ok we do know about this partition, so find out its device path and
+    # partition number, as we'll need this to invoke efibootmgr
+    local PARTNAME="$(readlink --canonicalize "${EFIPARTPATH}")" # e.g. /dev/sda3
+    local DEVNAME="${PARTNAME%%[[:digit:]]*}"             # e.g. /dev/sda
+    local PARTNUM="${PARTNAME##*[^[:digit:]]}"            # e.g. 3
+    local BOOTLABEL
+    # label will reflect if desired EFI partition is on USB or not
+    if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${EFIPARTPATH}"); then
+        BOOTLABEL="Gentoo Linux (USB Key)"
+    else
+        BOOTLABEL="Gentoo Linux (Internal Drive)"
+    fi
+    SMBOOTPATH="${SMBOOTPATH//\//\\}" # map boot file path to backslash separators
+    declare -i NUMBOOTORDERS="${#EBOOTORDER[@]}"
+    if ((NUMBOOTORDERS>0)); then
+        local FIRSTBOOTID="${EBOOTORDER[0]}"
+        # look this up - it may not match if the top item is e.g. a net boot
+        if [[ "${EBOOTIDTOINDEX[${FIRSTBOOTID}]+_}" ]]; then
+            declare -i IX="${EBOOTIDTOINDEX[${FIRSTBOOTID}]}"
+            # now check if this boot matches what we want; if so, leave it alone
+            if [[ "${EBOOTNAMES[${IX}]}" == "${BOOTLABEL}" && \
+                "${EBOOTPATHS[${IX}]}" == "${SMBOOTPATH}" && \
+                "${EBOOTUUIDS[${IX}]}" == "${EFIPARTUUID}" && \
+                "${EBOOTISACTIVES[${IX}]}" == "1" ]]; then
+                # all criteria met!
+                NEWBOOTENTRYNEEDED=0
+            fi
+        fi
+    fi
+    if ((NEWBOOTENTRYNEEDED==1)); then
+        # remove any existing bootnums with the same name first
+        declare -i I=0
+        for I in "${!EBOOTNAMES[@]}"; do
+            if [[ "${EBOOTNAMES[${I}]}" == "${BOOTLABEL}" ]]; then
+                show "Deleting conflicting boot entry ${EBOOTIDS[${I}]} ('${EBOOTNAMES[${I}]}')"
+                efibootmgr --quiet --delete-bootnum --bootnum "${EBOOTIDS[${I}]}"
+            fi
+        done
+        show "Adding ('${BOOTLABEL}') to top of the EFI boot list"
+        efibootmgr --create --disk "${DEVNAME}" --part "${PARTNUM}" --loader "${SMBOOTPATH}" --label "${BOOTLABEL}"
+    else
+        show "Appropriate entry already exists at the top of EFI boot list"
+    fi
+}
+check_key_file_if_on_efi_system_partition () {
+    # We check for the presence of a key file ONLY if it is on the EFI system 
+    # partition, as this must be mounted on entry to this function
+    if [[ "${KEYFILEPARTUUID}" == "${EFIPARTUUID}" ]]; then
+        # keyfile should be on our already-mounted partition
+        if [ ! -s "${EFIROOTDIR}/${LUKSKEYFILE}" ]; then
+            die "The ${EFIPARTNAME} does not contain a LUKS key file"
+        fi
+    else
+        warning "Your keyfile partition is != the EFI system partition"
+        warning "Please ensure that ${LUKSKEYFILE} is present, on partition"
+        warning "${KEYFILEPARTUUID},"
+        warning "before attemping to reboot"
+    fi
+}
+ensure_efi_partition_mounted() {
+    MOUNTEDONENTRY=0
+    if mount | grep -q " ${EFIROOTDIR} " > /dev/null; then
+        # check it is the correct partition, otherwise unmount it (to stop bad
+        # things happening in the case where the user leaves an old partition 
+        # mounted, changes the EFIPARTUUID in /etc/buildkernel.conf, then runs
+        # buildkernel)
+        local MOUNTEDPARTUUID="$(lsblk --noheadings --list --output="MOUNTPOINT,PARTUUID" | grep "^${EFIROOTDIR}[[:space:]]" | awk '{print $2;}')"
+        MOUNTEDPARTUUID="${MOUNTEDPARTUUID,,}"
+        if [[ "${MOUNTEDPARTUUID}" == "${EFIPARTUUID}" ]]; then
+            # remember original mount status, so we can maintain it later if needed
+            MOUNTEDONENTRY=1
+        else
+            warning "Wrong PARTUUID mounted on ${EFIROOTDIR}:"
+            warning " Have: ${MOUNTEDPARTUUID}"
+            warning " Want: ${EFIPARTUUID}"
+            warning " Unmounting"
+            sync
+            umount_and_forget "${EFIROOTDIR}"
+        fi
+    fi
+    if ((MOUNTEDONENTRY==0)); then
+        show "The ${EFIPARTNAME} is not mounted."
+        show "(If using a USB key to boot from, please ensure it is inserted)"
+        if ((ARG_ASK==1)); then
+            continue_yn "Would you like to mount it now"
+        else
+            show "Attemping to mount it..."
+        fi
+        if ! mount_and_remember "${EFIPATHMAP}" "${EFIROOTDIR}" "vfat"; then
+            die "Failed to mount ${EFIPATHMAP}"
+        fi
+    fi
+    check_partuuid_exists "${EFIPARTUUID}"
+    if partuuid_is_on_usb_device "${EFIPATHMAP}"; then
+        USINGUSBKEYFOREFI=1
+        EFIPARTNAME="EFI boot USB key"
+    else
+        USINGUSBKEYFOREFI=0
+    fi
+    check_key_file_if_on_efi_system_partition
+}
+enter_build_directory() {
+    show "Proceeding - entering ${LINUXDIR}..."
+    cd "${LINUXDIR}"
+}
+copy_config_from_proc_if_necessary () {
+    if [ ! -s "${TARGETCONFIG}" ]; then
+        if ((ARG_ASK==1)); then
+            continue_yn "There is no .config file; use current (${CURRENTVERSION}) config"
+        else
+            show "No .config file found; using current (${CURRENTVERSION}) config"
+        fi
+        # requires that the kernel has support for config in /proc
+        check_file_exists "${CURRENTCONFIG}"
+        zcat "${CURRENTCONFIG}" > "${TARGETCONFIG}"
+        if ((ARG_ASK==1)); then
+            show "Updating old config using make ${CONFIGUPDATETYPE}"
+            if [ "${CONFIGUPDATETYPE}" != "${SILENTUPDATETYPE}" ]; then
+                show "Please answer all questions as and if prompted..."
+            fi
+            make "${CONFIGUPDATETYPE}"
+        else
+            # non-interactive mode, so we have to go silent
+            show "Updating old config using make ${SILENTUPDATETYPE}"
+            make "${SILENTUPDATETYPE}"
+        fi
+    fi
+}
+conform_config_file() {
+    show "Setting Gentoo flags for systemd..."
+    # our initial init is a script on the initramfs, which then hands off to
+    # systemd...
+    set_kernel_config_list_to_y "GENTOO_LINUX GENTOO_LINUX_UDEV GENTOO_LINUX_INIT_SCRIPT GENTOO_LINUX_INIT_SYSTEMD"
+    # set up a few additional flags recommended in the wiki, but not forced on
+    # by the above
+    show "Setting additional recommended settings for systemd..."
+    # we omit IPV6 here - turn on manually if you want it
+    set_kernel_config_list_to_y "SECCOMP DMIID TMPFS_POSIX_ACL"
+    set_kernel_config "UEVENT_HELPER_PATH" ""
+    set_kernel_config_list_to_y "AUDIT AUDITSYSCALL"
+    show "Setting kernel command line = '${KERNEL_CMD_LINE}'..."
+    set_kernel_config "CMDLINE_BOOL" "y"
+    set_kernel_config "CMDLINE" "\"${KERNEL_CMD_LINE}\""
+    show "Setting up initramfs location and type..."
+    set_kernel_config "INITRAMFS_SOURCE" "\"${UNCOMPRESSEDINITRAMFS}\""
+    # initramfs compression must be 'none' - not as big a deal as it sounds,
+    # since the encapsulating kernel image will itself be compressed...
+    for COMP_TYPE in "GZIP" "BZIP2" "LZMA" "XZ" "LZO"; do
+        unset_kernel_config "INITRAMFS_COMPRESSION_${COMP_TYPE}"
+    done
+    set_kernel_config "INITRAMFS_COMPRESSION_NONE" "y"
+    # ensure we can get at the LUKS volume! note that these could also be
+    # modules really, since we copy all modules into the initramfs
+    show "Ensuring both Serpent and Whirlpool are included..."
+    set_kernel_config_list_to_y "CRYPTO_SERPENT CRYPTO_WP512"
+    show "Ensuring device mapper and crypt target support are included..."
+    set_kernel_config_list_to_y "BLK_DEV_DM DM_CRYPT"
+    show "Ensuring kernel makes config available under /proc..."
+    set_kernel_config_list_to_y "IKCONFIG IKCONFIG_PROC"
+    show "Setting options needed for EFI / stub loading..."
+    set_kernel_config_list_to_y "PARTITION_ADVANCED EFI_PARTITION EFI EFIVAR_FS EFI_VARS EFI_STUB"
+    show "Enabling real-time-clock support..."
+    set_kernel_config_list_to_y "RTC_CLASS RTC_HCTOSYS RTC_SYSTOHC"
+    set_kernel_config "RTC_HCTOSYS_DEVICE" "rtc0"
+    set_kernel_config_list_to_y "RTC_INTF_SYSFS RTC_INTF_PROC RTC_INTF_DEV RTC_DRV_CMOS"
+    show "Enabling suspend and hibernation support..."
+    set_kernel_config_list_to_y "SUSPEND HIBERNATION"
+    show "Ensuring deprecated sysfs support turned off..."
+    unset_kernel_config "SYSFS_DEPRECATED"
+    # turn off penguin logo at boot if using Plymouth
+    if [ -n "${PLYMOUTHTHEME}" ]; then
+        show "Plymouth in use: ensuring penguin boot logo is disabled..."
+        unset_kernel_config "LOGO"
+    fi
+    # you can define user_conform_config_file in your buildkernel.conf file...
+    if fn_exists user_conform_config_file; then
+        show "Calling user_conform_config_file function..."
+        (user_conform_config_file)
+    fi
+}
+allow_user_to_modify_config_graphically() {
+    # make menuconfig (and friends) will sort out any dependencies resulting
+    # from calling conform_config_file(), before the UI is presented
+    if ((ARG_MENUCONFIG==1)); then
+        # force the menuconfig, no matter whether interactive or not
+        show "Executing make ${CONFIGTYPE}; select the kernel options you require..."
+        make ${CONFIGTYPE}
+    elif ((ARG_ASK==1)); then
+        # interactive mode
+        if test_yn "Would you like to modify the configuration using the editor"; then
+            show "Executing make ${CONFIGTYPE}; select the kernel options you require..."
+            make ${CONFIGTYPE}
+        else
+            show "OK, autoconforming configuration using make ${CONFIGUPDATETYPE} instead..."
+            make ${CONFIGUPDATETYPE}        
+        fi
+    else
+        # non-interactive mode
+        show "Autoconforming configuration using make ${SILENTUPDATETYPE}..."
+        make ${SILENTUPDATETYPE}
+    fi
+}
+set_kernel_config() {
+    # flag as $1, value to set as $2, config must exist at "./.config"
+    local TGT="CONFIG_${1}"
+    local REP="${2//\//\\/}"
+    if grep -q "^${TGT}[^_]" .config; then
+        sed -ir "s/^\(${TGT}=.*\|# ${TGT} is not set\)/${TGT}=${REP}/" .config
+    else
+        echo "${TGT}=${2}" >> .config
+    fi
+}
+set_kernel_config_list_to_y() {
+    # force all in list to 'y'
+    local x
+    for x in ${1}; do
+        set_kernel_config "${x}" "y"
+    done
+}
+unset_kernel_config() {
+    # unsets flag with the value of $1, config must exist at "./.config"
+    local TGT="CONFIG_${1}"
+    sed -ir "s/^${TGT}=.*/# ${TGT} is not set/" .config
+}
+clean_kernel_tree_if_desired() {
+    declare -i DOCLEAN="${ARG_CLEAN}"
+    if ((DOCLEAN==0 && ARG_ASK==1)); then
+        if test_yn "Do a 'make clean' prior to build"; then
+            DOCLEAN=1
+        fi
+    fi
+    if ((DOCLEAN==1)); then
+        show "Cleaning up..."
+        make clean # not mrproper - so our .config file will be left alone
+    fi
+}
+kernel_build_pass_1() {
+    # touch ramdisk decompressed image file first, so that the
+    # kernel has something to include for the first run
+    rm ${VERBOSITYFLAG} -f "${UNCOMPRESSEDINITRAMFS}"
+    touch "${UNCOMPRESSEDINITRAMFS}"
+    show "Building ${NEWVERSION} (pass 1 - dummy initramfs)..."
+    make modules_prepare
+    make -j ${NUMCPUSPLUSONE}
+    make install
+    show "Installing modules..."
+    make modules_install
+    show "Installing firmware..."
+    make firmware_install
+}
+rebuild_external_modules_if_necessary() {
+    show "Creating any necessary external modules (e.g., VirtualBox)..."
+    emerge ${VERBOSITYFLAG} @module-rebuild
+}
+create_initramfs_using_genkernel() {
+    show "Creating initramfs (uncompressed)..."
+    # this is a partial use of genkernel, we don't use it to build the kernel
+    # itself; also note, EFI kernels *require* an uncompressed ramdisk
+    # we suppress gpg here as we don't want to add gpg v2 which is installed,
+    # but rather our static gpg v1, which will be inserted into the initramfs
+    local PLYMOUTH_OPTS=""
+    if [ -n "${PLYMOUTHTHEME}" ]; then
+        PLYMOUTH_OPTS="--plymouth --plymouth-theme=${PLYMOUTHTHEME}"
+    fi
+    local POSTCLEAR_FLAG=""
+    if ((ARG_POSTCLEAR==1)); then
+        POSTCLEAR_FLAG="--postclear" # clear all caches after genkenrel run
+    fi
+    genkernel --install --no-mountboot \
+        --luks --lvm  --no-gpg --udev ${POSTCLEAR_FLAG} \
+        --kernel-config="${TARGETCONFIG}" --busybox \
+        --no-compress-initramfs --all-ramdisk-modules --firmware \
+        ${PLYMOUTH_OPTS} initramfs
+    cp ${VERBOSITYFLAG} "${BOOTDIR}/${INITRAMFSNAME}" "${UNCOMPRESSEDINITRAMFS}"
+}
+unpack_initramfs() {
+    show "Unpacking initramfs cpio archive to ${INITRAMFSDIR}..."
+    if [ ! -d "${INITRAMFSDIR}" ]; then
+        mkdir "${INITRAMFSDIR}"
+    else
+        rm ${VERBOSITYFLAG} -rf "${INITRAMFSDIR}"/* # wipe any old data
+    fi
+    (cd "${INITRAMFSDIR}"; cpio --extract --file="${UNCOMPRESSEDINITRAMFS}")
+}
+build_static_gpg() {
+    # gnupg not slotted unfortunately, so we do this instead
+    show "Building static gpg 1.x for use in initramfs..."
+    emerge ${VERBOSITYFLAG} "app-crypt/staticgpg"
+}
+modify_initramfs() {
+    if [ ! -x "${GPG1PATHFROM}" ]; then
+        if ((ARG_ASK==1)); then
+            continue_yn "No static gpg found, would you like to build it?"
+        else
+            show "No static gpg found, so creating one..."
+        fi
+        build_static_gpg
+    fi
+    show "Copying static gpg program into initramfs..."
+    cp ${VERBOSITYFLAG} "${GPG1PATHFROM}" "${GPG1PATHTO}"
+    show "Copying contents of ${MODPROBEDIR} directory into initramfs..."
+    if [ "$(ls -A ${MODPROBEDIR})" ]; then
+        cp ${VERBOSITYFLAG} "${MODPROBEDIR}"/* "${INITRAMFSDIR}${MODPROBEDIR}/"
+    fi
+    # you can define user_modify_initramfs in your buildkernel.conf file...
+    if fn_exists user_modify_initramfs; then
+        show "Calling user_modify_initramfs function..."
+        (user_modify_initramfs)
+    fi
+}
+repack_initramfs() {
+    show "Deleting old initramfs cpio archive, and repacking..."
+    rm ${VERBOSITYFLAG} -f "${UNCOMPRESSEDINITRAMFS}" "${BOOTDIR}/${INITRAMFSNAME}"
+    (cd "${INITRAMFSDIR}"; find . | cpio -H newc --create > "${UNCOMPRESSEDINITRAMFS}")
+    cp ${VERBOSITYFLAG} "${UNCOMPRESSEDINITRAMFS}" "${BOOTDIR}/${INITRAMFSNAME}"
+}
+kernel_build_pass_2() {
+    show "Building ${NEWVERSION} (pass 2, to include real initramfs)..."
+    make -j ${NUMCPUSPLUSONE}
+    show "Installing boot files to ${BOOTDIR}; for reference only..."
+    make install
+    # no need to re-install modules or firmware - only the initramfs has changed
+}
+sign_kernel_if_possible() {
+    if [ -s "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}" ]; then
+        show "Removing old signed kernel ${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}"
+        rm ${VERBOSITYFLAG} "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}"
+    fi
+    if [ -s "${SECUREBOOTKEY}" -a -s "${SECUREBOOTCERT}" ]; then
+        show "Signing kernel"
+        sbsign --key "${SECUREBOOTKEY}" --cert "${SECUREBOOTCERT}" \
+            --output "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}" \
+            "${BOOTDIR}/${VMLINUZNAME}"
+    else
+        warning "No key / certificate present in ${SECUREBOOTKEY}"
+        warning "This kernel will only boot in unsecured EFI mode!"
+    fi
+}
+purge_old_backup_kernel_and_config_if_present() {
+    local FILEPREFIX=${1:-""}
+    rm -rf "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFIBOOTFILE}${OLDSUFFIX}"
+    rm -rf "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFICONFIGFILE}${OLDSUFFIX}"
+}
+check_if_enough_disk_space_for_backups() {
+    # do the best we can - if using an existing (Windows) EFI system partition
+    # (and an unshrunk kernel) things may be tight
+    declare -i OLDKERNSIZEKB=0 OLDCONFIGSIZEKB=0
+    declare -i NEWKERNSIZEKB=0 NEWCONFIGSIZEKB=0
+    declare -i FREESPACEKB="$(df -k "${EFIROOTDIR}" | tail -n 1 | awk '{print $4}' | sed 's/[Kk]//g')"
+    # introduce a safety factor for file overhead etc
+    FREESPACEKB=$((FREESPACEKB*90/100))
+    if [ -s "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" ]; then
+        OLDKERNSIZEKB="$(stat --format="%s" "${FULLEFIBOOTDIR}/${EFIBOOTFILE}")"
+        OLDKERNSIZEKB=$((OLDKERNSIZEKB/1024))
+    fi 
+    if [ -s "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" ]; then
+        OLDCONFIGSIZEKB="$(stat --format="%s" "${FULLEFIBOOTDIR}/${EFICONFIGFILE}")"
+        OLDCONFIGSIZEKB=$((OLDCONFIGSIZEKB/1024))
+    fi
+    if [ -s "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}" ]; then
+        NEWKERNSIZEKB="$(stat --format="%s" "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}")"
+    else
+        NEWKERNSIZEKB="$(stat --format="%s" "${BOOTDIR}/${VMLINUZNAME}")"
+    fi
+    NEWKERNSIZEKB=$((NEWKERNSIZEKB/1024))
+    NEWCONFIGSIZEKB="$(stat --format="%s" "${TARGETCONFIG}")"
+    NEWCONFIGSIZEKB=$((NEWCONFIGSIZEKB/1024))
+    declare -i TOTALNEWKB=$((NEWKERNSIZEKB+NEWCONFIGSIZEKB))
+    declare -i TOTALOLDKB=0
+    if ((BACKUPOLDKERNEL==1)); then
+        TOTALOLDKB+=$((OLDKERNSIZEKB+OLDCONFIGSIZEKB))
+    fi
+    declare -i TOTALREQKB=$((TOTALOLDKB+TOTALNEWKB))
+    if ((TOTALNEWKB>FREESPACEKB)); then
+        # would we have enough if we deleted the old files?
+        declare -i RECOVERABLEKB=0
+        if [ -s "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" ]; then
+            RECOVERABLEKB+="$(stat --format="%s" "${FULLEFIBOOTDIR}/${EFIBOOTFILE}")"
+        fi
+        if [ -s "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" ]; then
+            RECOVERABLEKB+="$(stat --format="%s" "${FULLEFIBOOTDIR}/${EFICONFIGFILE}")"
+        fi
+        if ((TOTALNEWKB<=(FREESPACEKB+RECOVERABLEKB))); then
+            # purge them now
+            warning "Deleting previous kernel and configuration from EFI"
+            warning "system partition, to save space"
+            rm -vf "${FULLEFIBOOTDIR}/${EFIBOOTFILE}"
+            rm -vf "${FULLEFIBOOTDIR}/${EFICONFIGFILE}"
+            FREESPACEKB+="${RECOVERABLEKB}"
+            # obviously, nothing to back up now!
+            warning "Suppressing backup on this run"
+            BACKUPOLDKERNEL=0
+        else
+            die "Insufficient space to copy kernel onto EFI system partition!"
+        fi
+    fi
+    if ((TOTALREQKB>FREESPACEKB)); then
+        warning "Insufficient space to backup prior kernel"
+        warning "Suppressing backup on this run"
+        BACKUPOLDKERNEL=0
+    fi
+}
+backup_prior_efi_kernel_if_present() {
+    local FILEPREFIX=${1:-""}
+    # first, make sure the directory exists!
+    mkdir -pv "${FULLEFIBOOTDIR}"
+    if ((BACKUPOLDKERNEL==1)); then
+        # now backup any prior kernel
+        if [ -s "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" ]; then
+            show "Backing up old bootfile in case of failure..."
+            cp ${VERBOSITYFLAG} -f "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFIBOOTFILE}${OLDSUFFIX}"
+        fi
+    fi
+}
+backup_prior_config_if_present() {
+    local FILEPREFIX=${1:-""}
+    if ((BACKUPOLDKERNEL==1)); then
+        if [ -s "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" ]; then
+            show "Backing up old config in case of failure..."
+            cp ${VERBOSITYFLAG} -f "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFICONFIGFILE}${OLDSUFFIX}"
+        fi
+    fi
+}
+copy_new_efi_kernel_to_efi_partition() {
+    show "Copying EFI-bootable kernel $NEWVERSION to EFI directory..."
+    if [ -s "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}" ]; then
+        cp ${VERBOSITYFLAG} "${BOOTDIR}/${VMLINUZNAME}${SIGNEDSUFFIX}" "${FULLEFIBOOTDIR}/${EFIBOOTFILE}"
+    else
+        cp ${VERBOSITYFLAG} "${BOOTDIR}/${VMLINUZNAME}" "${FULLEFIBOOTDIR}/${EFIBOOTFILE}"
+    fi
+}
+copy_new_config_to_efi_partition() {
+    show "Copying .config file to EFI directory (for reference only)..."
+    cp ${VERBOSITYFLAG} "${TARGETCONFIG}" "${FULLEFIBOOTDIR}/${EFICONFIGFILE}"
+}
+finalize_efi_partition_and_unmount_if_desired() {
+    show "Syncing filesystem..."
+    sync
+    echo
+    declare -i DOUNMOUNT=0
+    
+    if ((ARG_UNMOUNTATEND==1)); then
+        # this trumps everything else
+        DOUNMOUNT=1
+    else
+        if ((ARG_ASK==1)); then
+            # check with user what to do
+            if test_yn "Completed: would you like to unmount the ${EFIPARTNAME} now"; then
+                DOUNMOUNT=1
+            fi
+        else
+            # leave things how we found them
+            if ((MOUNTEDONENTRY==0)); then
+                DOUNMOUNT=1;
+            fi
+        fi
+    fi
+    if ((DOUNMOUNT==1)); then
+        umount_and_forget "${EFIROOTDIR}"
+        if ((USINGUSBKEYFOREFI==1)); then
+            show "Unmounted, it is now safe to remove the ${EFIPARTNAME}"
+        fi
+    else
+        if ((ARG_ASK==0)); then
+            show "The ${EFIPARTNAME} has been left mounted"
+        else
+            show "OK, the ${EFIPARTNAME} has been left mounted"
+        fi
+    fi
+}
+display_final_status() {
+    show "All done!"
+    if ((ARG_STAGEONLY==1)); then
+        show "  (Remember to run again with the --copy-from-staging option, to install"
+        show "   to the EFI system partition)"
+    fi
+}
+if_option_has_value() {
+    # execute third argument as function, if the variable *named by* the second
+    # argument has the value passed in the first argument
+    # remaining arguments (if any) will be passed to the invoked function
+    declare -i ARG TESTVAL
+    TESTVAL="${1}"
+    shift
+    eval ARG="\$${1}" # bash indirect reference
+    shift
+    if ((ARG==TESTVAL)); then
+        local TORUN="${1}"
+        shift
+        # execute the command with the remaining arguments
+        "${TORUN}" "${@}"
+    fi
+}
+if_option_set() {
+    # execute second argument as function if variable named by the first
+    # argument has value 1
+    if_option_has_value 1 "${@}"
+}
+if_option_unset() {
+    # execute second argument as function if variable named by the first
+    # argument has value 0
+    if_option_has_value 0 "${@}"
+}
+print_usage() {
+    cat << EOF
+Usage: ${PROGNAME} [options]
+
+Options:
+  -a, --ask             turns on interactive mode: you must confirm key actions
+  -b, --snapshot-backup make a datestamped kernel / configuration backup on EFI
+                        system partition (to keep a last-known-good version)
+  -c, --clean           do a make clean at the beginning of kernel build
+  -e, --easy-setup      invoke a simple, menu-driven setup for buildkernel.conf
+  -f, --copy-from-staging
+                        use this option after compiling a kernel with
+                        --stage-only, to copy it to the EFI system partition
+  -h, --help            show this help message and exit
+  -m, --menuconfig      show kernel configuration GUI, even if non-interactive
+  -p, --postclear       clear genkernel temporary files and caches after run
+  -s, --stage-only      prepare kernel in /boot as usual, but do not copy 
+                        to system partition
+  -u, --unmount-at-end  umount the EFI system partition on successful exit
+  -v, --verbose         display more information, where possible
+  -V, --version         display the version number of ${PROGNAME} and exit
+EOF
+}
+print_help() {
+    cat << EOF
+${PROGNAME} - build a secure boot kernel and save to EFI system partition
+EOF
+    print_usage
+}
+print_version() {
+    printf "%s\n" "${VERSION}"
+}
+display_usage_message_and_bail_out() {
+    if [ ! -z "${1+x}" ]; then
+        printf "%s: %s\n" "${PROGNAME}" "${1}" >&2
+    fi
+    print_usage >&2
+    cleanup_and_exit_with_code 1
+}
+internal_consistency_option_checks() {
+    # following not exhaustive, just some more obvious snafus
+    if ((ARG_STAGEONLY==1 && ARG_COPYFROMSTAGING==1)); then
+        display_usage_message_and_bail_out "cannot set both --copy-from-staging and --stage-only"
+    fi
+    if ((ARG_CLEAN==1 && ARG_COPYFROMSTAGING==1)); then
+        display_usage_message_and_bail_out "--clean is meaningless with --copy-from-staging"
+    fi
+    if ((ARG_STAGEONLY==1 && ARG_UNMOUNTATEND==1)); then
+        display_usage_message_and_bail_out "--unmount-at-end is meaningless with --stage-only"
+    fi
+    if ((ARG_MENUCONFIG==1 && ARG_COPYFROMSTAGING==1)); then
+        display_usage_message_and_bail_out "--menuconfig if meaningless with --copy-from-staging"
+    fi
+}
+snapshot_kernel_on_efi_partition() {
+    local TIMESTAMP_PREFIX=$(date +"%Y-%m-%d-%H-%M-%S-")
+    ensure_efi_partition_mounted
+    backup_prior_efi_kernel_if_present "${TIMESTAMP_PREFIX}"
+    backup_prior_config_if_present "${TIMESTAMP_PREFIX}"
+    finalize_efi_partition_and_unmount_if_desired
+}
+process_command_line_options() {
+    local TEMP
+    declare -i RC
+    set +e
+        # error trapping off, as we want to handle errors
+        TEMP="$(getopt -o abcefhmpsuvV --long ask,snapshot-backup,clean,easy-setup,copy-from-staging,help,menuconfig,postclear,stage-only,verbose,unmount-at-end,version -n "${PROGNAME}" -- "${@}")"
+        RC="${?}"
+    set -e
+    if ((RC!=0)); then
+        display_usage_message_and_bail_out
+    fi
+    eval set -- "${TEMP}"
+
+    # extract options and their arguments into variables.
+    while true ; do
+        case "${1}" in
+            -a|--ask) ARG_ASK=1 ; shift ;;
+            -b|--snapshot-backup) ARG_SNAPSHOTBACKUP=1 ; shift ;;
+            -c|--clean) ARG_CLEAN=1 ; shift ;;
+            -e|--easy-setup) ARG_EASYSETUP=1 ; shift ;;
+            -f|--copy-from-staging) ARG_COPYFROMSTAGING=1 ; shift ;;
+            -h|--help) ARG_HELP=1 ; shift ;;
+            -m|--menuconfig) ARG_MENUCONFIG=1 ; shift ;;
+            -p|--postclear) ARG_POSTCLEAR=1 ; shift ;;
+            -s|--stage-only) ARG_STAGEONLY=1 ; shift ;;
+            -u|--unmount-at-end) ARG_UNMOUNTATEND=1 ; shift ;;
+            -v|--verbose) ARG_VERBOSE=1 ; shift ;;
+            -V|--version) ARG_VERSION=1 ; shift ;;
+            --) shift ; break ;;
+            *) die "Internal error!" ;;
+        esac
+    done
+    # set verbosity
+    if ((ARG_VERBOSE==1)); then
+        VERBOSITY+=1
+    fi
+    if ((VERBOSITY>1)); then
+        VERBOSITYFLAG="--verbose"
+    fi
+    # set interactive mode
+    if ((ARG_ASK==1)); then
+        ASKFLAG="--ask"
+    fi
+    internal_consistency_option_checks
+    # process 'perform-then-exit' options
+    if ((ARG_HELP==1)); then
+        print_help
+        cleanup_and_exit_with_code 0
+    elif ((ARG_VERSION==1)); then
+        print_version
+        cleanup_and_exit_with_code 0
+    elif ((ARG_EASYSETUP==1)); then
+        interactively_set_buildkernel_config
+        cleanup_and_exit_with_code 0
+    fi
+    setup_final_variables
+    if ((ARG_SNAPSHOTBACKUP==1)); then
+        snapshot_kernel_on_efi_partition
+        cleanup_and_exit_with_code 0
+    fi
+}
+
+# *************** start of script proper ***************
+suppress_colour_if_output_not_to_a_terminal
+check_if_booted_under_efi
+source_etc_conf_file
+process_command_line_options "${@}"
+ask_whether_to_proceed
+
+if_option_unset "ARG_STAGEONLY" ensure_efi_partition_mounted
+if ((ARG_COPYFROMSTAGING==0)); then    
+    enter_build_directory
+    copy_config_from_proc_if_necessary
+    conform_config_file
+    allow_user_to_modify_config_graphically
+    if_option_set "ARG_ASK" continue_yn "Now build a kernel with this new configuration"
+    clean_kernel_tree_if_desired
+    kernel_build_pass_1         # with empty initramfs
+    rebuild_external_modules_if_necessary
+    create_initramfs_using_genkernel
+    unpack_initramfs
+    modify_initramfs            # make sure our static gpg is in there!
+    repack_initramfs
+    kernel_build_pass_2         # with real initramfs
+    sign_kernel_if_possible     # if key/certificate available, for secure boot
+fi
+if ((ARG_STAGEONLY==0)); then
+    purge_old_backup_kernel_and_config_if_present
+    check_if_enough_disk_space_for_backups
+    backup_prior_efi_kernel_if_present
+    backup_prior_config_if_present
+    copy_new_efi_kernel_to_efi_partition
+    copy_new_config_to_efi_partition
+    conform_efi_boot_order_if_possible
+    finalize_efi_partition_and_unmount_if_desired
+fi
+display_final_status
+cleanup_and_exit_with_code 0
+# **************** end of script proper ****************

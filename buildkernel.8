@@ -1,0 +1,217 @@
+.TH BUILDKERNEL 8 "Version 1.0.0: July 2014"
+.SH NAME
+buildkernel \- build secure boot kernel, save to EFI system partition
+.SH SYNOPSIS
+.B buildkernel
+[\fIoptions\fR]
+.SH DESCRIPTION
+\fBbuildkernel\fR is a script that builds a Gentoo Linux EFI stub kernel
+which is suitable for booting from a USB key using UEFI (no additional
+bootloader required). It makes use of the initramfs creation tools
+(and early userspace \fBinit\fR(8) script) provided by \fBgenkernel\fR(8).
+
+Specifically, the assumed use-case for \fBbuildkernel\fR is where you are creating a kernel
+for use in a dual-factor-authenticated LVM-over-LUKS system, booting from an
+external USB key, with secure boot enabled (using UEFI), where you
+may (optionally) wish to use the \fBplymouth\fR(8) splash manager, and where
+the target (final) init system is  \fBsystemd\fR(8).
+
+To facilitate this, \fBbuildkernel\fR will create a statically linked version
+of \fBgpg\fR(1) \(em one which furthermore does not require \fBpinentry\fR \(em
+and include this in the initramfs.
+
+It will also automatically set the necessary kernel configuration parameters,
+including the command line, sign the resulting kernel if possible,
+then update the EFI boot list if required.
+
+The \fBbuildkernel\fR utility can be invoked in non-interative (default) or 
+interactive mode (see the \fB--ask\fR option, below).
+Non-interactive mode is suitable for use in a scripted invocation.
+
+Certain key options can be specified via the configuration file, 
+\fI/etc/buildkernel.conf\fR: see \fBbuildkernel.conf\fR(5) for details.
+
+Although \fBbuildkernel\fR is targetted primarily at the use-case where the
+EFI system partition is on a removable USB key (for security), it can
+also be used with a system partition on a fixed drive.
+
+.SH ALGORITHM DETAIL
+When invoked, \fBbuildkernel\fR perorms the following steps, in order:
+.br
+.RS
+.IP \(bu 2
+reads your \fI/etc/buildkernel.conf\fR configuration file;
+.IP \(bu 2
+mounts the EFI partition, if not already mounted (to \fI/boot/efi\fR);
+.IP \(bu 2
+enters the \fI/usr/src/linux\fR directory;
+.IP \(bu 2
+copies a .config file from the currently running kernel (via \fI/proc/config.gz\fR) if no config already exists in \fI/usr/src/linux\fR, and sanitizes/updates it with \fBmake olddefconfig\fR;
+.IP \(bu 2
+conforms the .config, by setting/unsetting various key parameters that are required for the kernel to boot successfully in EFI mode, including the somewhat complex kernel command line (which contains directives targeted both at the kernel, and at the \fBinit\fR(8) script provided by \fBgenkernel\fR(8)); required settings for
+\fBsystemd\fR(1) are also conformed;
+.IP \(bu 2
+calls your user hook function \fBuser_conform_config_file\fR if you have defined it in \fI/etc/genkernel.conf\fR (you'll only generally want to do this to override unwanted changes made by \fBbuildkernel\fR in the above step; other changes should be made via the standard \fBmake menuconfig\fR route, per the step below; they will be persisted);
+.IP \(bu 2
+allows you to modify the resulting configuration using the standard \fBmake menuconfig\fR tool (you can force this to happen, even in non-interactive mode, with \fB--menuconfig\fR, and you will be asked whether you wish to do so in interactive mode (set by \fB--ask\fR)); if you choose not to run \fBmake menuconfig\fR, \fBmake olddefconfig\fR will be run instead (which silently sanitizes/upgrades the conformed \fB.config\fR);
+.IP \(bu 2
+cleans the kernel tree (you can force this with \fB--clean\fR, and you will be asked whether you wish to do so in interactive mode (set by \fB--ask\fR));
+.IP \(bu 2
+builds the kernel, and its modules, with the specified configuration; in this first pass, an empty initramfs is used (since it must be incorporated in the kernel, to be protected by UEFI secure boot, but we don't have everything necessary to include in it, yet!);
+.IP \(bu 2
+builds any external modules (such as those required for VirtualBox), using \fBemerge @module-rebuild\fR;
+.IP \(bu 2
+creates a first cut of the initramfs using \fBgenkernel\fR(8) (see below for more details); this will contain \fBgenkernel\fR(8)'s \fBinit\fR(8) script, compiled modules, any necessary firmware (if you haven't deblobbed), and a minimal set of binaries; it does \fInot\fR at this point contain a static copy of \fBgpg\fR;
+.IP \(bu 2
+unpacks the initramfs, to the \fI/boot/initramfs\fR directory;
+.IP \(bu 2
+modifies the initramfs by copying the \fI/etc/modprobe.d\fR directory contents across to it, and the static v1.x \fBgpg\fR(1) binary mentioned earlier (if this does not already exist, \fBbuildkernel\fR will create it);
+.IP \(bu 2
+calls your user hook function \fBuser_modify_initramfs\fR if you have defined it in \fI/etc/genkernel.conf\fR (you don't need it to make the boot work);
+.IP \(bu 2
+repacks the initramfs into \fI/boot/initramfs.cpio\fR (the unpacked copy is left at \fI/boot/initramfs\fR too, for reference, since it's useful to be able to see what is in this archive at a glance);
+.IP \(bu 2
+builds the kernel a second time (to incorporate this 'real' initramfs); this is a quick process as most of the components are unchanged;
+.IP \(bu 2
+if you have a secure boot private key and public key certificate available in
+\fI/etc/efikeys/db.key\fR and \fI/etc/efikeys/db.crt\fR respectively,
+signs the kernel so it will secure boot;
+.IP \(bu 2
+backs up the old kernel and config on the EFI system partition, if any are present;
+.IP \(bu 2
+copies the newly built kernel (which is configured so as to be an EFI executable), into \fI/boot/efi/EFI/Boot/bootx64.efi\fR (the magic location expected by most UEFI BIOSes; you can override this \(em see \fBgenkenrnel.conf\fR(5)); and also copies the config to the same directory;
+.IP \(bu 2
+ensures that an EFI boot entry for the new kernel exists, and that it is placed at the top of the EFI boot order (N.B., it is only possible to do this if the system is currently booted under EFI);
+.IP \(bu 2
+performs a filesystem sync and then unmounts the EFI system partition (if you so specify, see the \fB--unmount-at-end\fR option text).
+.RE
+.SH OPTIONS
+.TP
+.BR \-a ", " \-\-ask
+Sets interactive mode, in which you will be asked what to do at a number of
+key steps in the process (see \fBALGORITHM DETAIL\fR, above).
+.TP
+.BR \-b ", " \-\-snapshot\-backup
+Makes a backup of the current kernel and config on the EFI system partition,
+using a a datestamp prefix for both files (based on the system date at the time
+the command was issued). This is useful to preserve a 'last known good' (LNG)
+configuration, since the standard backups written by \fBbuildkernel\fR are
+overwritten each time the program is run.
+.TP
+.BR \-c ", " \-\-clean
+Specifies that a \fBmake clean\fR should be carried out in the kernel source
+directory prior to building (this will leave the \fI.config\fR file intact).
+Most of the time, it is fine not to \fBmake clean\fR.
+
+If this option is left \fIunspecified\fR, then \fBbuildkernel\fR will either:
+a) in non-interactive mode, not perform a \fBmake clean\fR; or
+b) in interactive move, ask you whether or not you wish to \fBmake clean\fR.
+.TP
+.BR \-e ", " \-\-easy\-setup
+This option invokes a simple, menu-driven setup program for the
+\fBbuildkernel.conf(5)\fR configuration file. Using this can help you to
+avoid more obvious mistakes when setting up \fBbuildkernel\fR.
+.TP
+.BR \-f ", " \-\-copy\-from\-staging
+This option is used where you have previously built a kernel using the
+\fB--stage-only\fR option, and would now like \fBbuildkernel\fR to copy it onto
+your EFI system partition. No further compilation will be done when this option
+is specified, only copying.
+.TP
+.BR \-h ", " \-\-help
+Displays a short help screen, and exits.
+.TP
+.BR \-m ", " \-\-menuconfig
+Specifies that the GUI-based kernel configuration step (\fBmake menuconfig\fR)
+should be performed at the appropriate stage in the process
+(see \fBALGORITHM DETAIL\fR, above). If this option is
+left  \fIunspecified\fR, then \fBbuildkernel\fR will either:
+a) in non-interactive mode, not perform a \fBmake menuconfig\fR; or
+b) in interactive move, ask you whether or not you wish to \fBmake menuconfig\fR.
+.TP
+.BR \-p ", " \-\-postclear
+Clears all \fBgenkernel\fR(8) temporary files and caches after run.
+.TP
+.BR \-s ", " \-\-stage\-only
+When this option is specified, \fBbuildkernel\fR will create the kernel in
+the \fI/boot\fR staging directory as usual, but will not copy the result across
+to the EFI system partition.
+
+This is useful in situations where e.g., the USB key holding the system partition
+is unavailble, but you would still like to create an updated kernel (in an
+automated update context, for example).
+
+If you use this option, you can use \fBbuildkernel\fR with the
+\fB--copy-from-staging\fR option, to update your system partition based on the
+contents of the \fI/boot\fR directory later.
+.TP
+.BR \-u ", " \-\-unmount\-at\-end
+Instructs \fBbuildkernel\fR to unmount the EFI system partition upon successful
+exit.
+
+If this option is left \fIunspecified\fR, then \fBbuildkernel\fR will either:
+a) in non-interactive mode, leave the EFI system partition in the mount state
+in which it found it (mounted or unmounted); or
+b) in interactive mode, ask you whether or not you wish to unmount.
+.TP
+.BR \-v ", " \-\-verbose
+Provides more verbose output from invoked tools, where possible.
+.TP
+.BR \-V ", " \-\-version
+Displays the version number of \fBbuildkernel\fR, and exits.
+.SH IMPORTANT CONFIGURATION VARIABLES
+Before invoking \fBbuildkernel\fR, you \fImust\fR set the following variables in
+\fI/etc/buildkernel.conf\fR:
+.br
+.TP
+.BR EFIPARTUUID
+This must be set to the partition UUID of your EFI system partition.
+It will generally be on a removable USB key, but a partition on a fixed drive
+can also be specified.
+.br
+.TP
+.BR CRYPTPARTUUID
+This must be set to the partition UUID of the \fBLUKS\fR partition on your fixed
+drive, which contains a set of \fBlvm\fR logical volumes (for root, home and swap
+directories).
+
+By default, \fBbuildkernel\fR assumes that the \fBLUKS\fR
+partition is secured with by a
+\fBgpg\fR(1) encrypted keyfile. At boot, you are prompted to enter the
+passphrase for this file. Because both the keyfile, and a passphrase to unlock
+it, are required, dual-factor security is obtained.
+.br
+.PP
+Please see the \fB/etc/buildkernel.conf\fR(5) manpage for additional optional,
+but important, variables which may be set (including \fBKEYMAP\fR to specify
+the early-boot keymap).
+.SH EXIT STATUS
+The exit status is 0 if the kernel build completed successfully, and 1 otherwise.
+.SH BUGS
+\fBbuildkernel\fR currently executes the kernel build process as the root user.
+It would be a little more hygienic to build as a non-priveleged user, and then
+install as root.
+.SH COPYRIGHT
+.nf
+Copyright \(co 2014 sakaki
+License GPLv3+ (GNU GPL version 3 or later)
+<http://gnu.org/licenses/gpl.html>
+
+This is free software, you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+.fi
+.SH AUTHORS
+sakaki \(em send bug reports or comments to <sakaki@deciban.com>
+.SH "SEE ALSO"
+.BR emerge (1),
+.BR gpg (1),
+.BR make (1),
+.BR systemd (1),
+.BR cryptsetup (8),
+.BR genkernel (8),
+.BR genup (8),
+.BR init (8),
+.BR lvm (8),
+.BR plymouth (8),
+.BR umount (8),
+.BR portage (5).
