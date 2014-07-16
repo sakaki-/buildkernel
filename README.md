@@ -18,5 +18,5 @@ Although **buildkernel** is targetted primarily at the use-case where the EFI sy
 
 ## Installation
 
-**buildkernel** is best installed (on Gentoo) via its ebuild, available as part of the **sakaki-tools** overlay (available on GitHub).
+**buildkernel** is best installed (on Gentoo) via its ebuild, available as part of the **sakaki-tools** [overlay](https://github.com/sakaki-/sakaki-tools).
 Full instructions are provided on the [Gentoo wiki](https://wiki.gentoo.org/wiki/) (forthcoming).
