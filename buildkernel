@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.0"
+VERSION="1.0.1"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
@@ -49,6 +49,7 @@ FULLEFIBOOTDIR="${EFIROOTDIR}${EFIBOOTDIR}"
 EFICONFIGFILE="config"
 OLDSUFFIX=".old"
 PARTUUIDDEVDIR="/dev/disk/by-partuuid"
+DISKIDDEVDIR="/dev/disk/by-id"
 IDDEVDIR="/dev/disk/by-id"
 DEFAULTLUKSKEYFILE="luks-key.gpg"
 LUKSKEYFILE="${DEFAULTLUKSKEYFILE}"
@@ -120,6 +121,8 @@ declare -A HASWINBOOTLOADER
 declare -A EBOOTIDTOINDEX
 # used to unwind mountpoints on failure
 declare -A ALLMOUNTS
+# has a '1' entry for all USB partitions; set by find_all_usb_partitions
+declare -A ISUSBPART
 # used by menu-driven config setting
 declare -i CONFIGDIRTY=0
 # archived prior versions of key config variables
@@ -254,14 +257,10 @@ check_is_luks_volume() {
     cryptsetup isLuks "${1}" || die "Partition with UUID '${1}' is not a LUKS volume"
 }
 partuuid_is_on_usb_device() {
-    local CANONPART="$(readlink --canonicalize "${1}")"
-    local NEXTPART NEXTCANONPART
-    for NEXTPART in "${IDDEVDIR}"/usb-*-part*; do
-        NEXTCANONPART="$(readlink --canonicalize "${NEXTPART}")"
-        if [ "${CANONPART}" = "${NEXTCANONPART}" ]; then
-            return 0
-        fi
-    done
+    local CANONPART="$(readlink --canonicalize "${PARTUUIDDEVDIR}/${1,,}")"
+    if [[ "${ISUSBPART[${CANONPART}]-0}" == "1" ]]; then
+        return 0
+    fi
     return 1
 }
 check_partuuid_exists() {
@@ -347,6 +346,21 @@ check_if_booted_under_efi() {
         USINGEFI=0
     fi
 }
+find_all_usb_partitions() {
+    # overwrites ISUSBPART
+    local U ALLU="${!ISUSBPART[@]}"
+    for U in ${ALLU}; do
+        unset -v "ISUSBPART[${U}]"
+    done
+    local NEXTID
+    for NEXTID in "${DISKIDDEVDIR}/usb-"*"-part"*[[:digit:]]; do
+        if [ -e "${NEXTID}" ]; then
+            # remember this
+            local NEXTCANONPART="$(readlink --canonicalize "${NEXTID}")"
+            ISUSBPART["${NEXTCANONPART}"]="1"
+        fi
+    done
+}
 find_all_gpg_keyfile_partitions() {
     # overwrites the variables GPGUUIDS, GPGPARTNAMES, GPGDEVNAMES and
     # GPGPARTNUMS
@@ -355,18 +369,20 @@ find_all_gpg_keyfile_partitions() {
     GPGUUIDS=(); GPGPARTNAMES=(); GPGDEVNAMES=(); GPGPARTNUMS=()
     local NEXTPART
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
-        if ! cryptsetup isLuks "${NEXTPART}"; then
-            NEXTPART="${NEXTPART,,}"
-            local NEXTUUID="${NEXTPART##*/}"
-            local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
-            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
-            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
-            if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
-                # assign results (Bash treats arrays as unset if not assigned a value)
-                GPGUUIDS=("${GPGUUIDS[@]:+${GPGUUIDS[@]}}" "${NEXTUUID}")
-                GPGPARTNAMES=("${GPGPARTNAMES[@]:+${GPGPARTNAMES[@]}}" "${NEXTPARTNAME}")
-                GPGDEVNAMES=("${GPGDEVNAMES[@]:+${GPGDEVNAMES[@]}}" "${NEXTDEVNAME}")
-                GPGPARTNUMS=("${GPGPARTNUMS[@]:+${GPGPARTNUMS[@]}}" "${NEXTPARTNUM}")
+        if [ -e "${NEXTPART}" ]; then
+            if ! cryptsetup isLuks "${NEXTPART}"; then
+                NEXTPART="${NEXTPART,,}"
+                local NEXTUUID="${NEXTPART##*/}"
+                local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+                local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+                local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+                if partuuid_is_on_usb_device "${NEXTUUID}"; then
+                    # assign results (Bash treats arrays as unset if not assigned a value)
+                    GPGUUIDS=("${GPGUUIDS[@]:+${GPGUUIDS[@]}}" "${NEXTUUID}")
+                    GPGPARTNAMES=("${GPGPARTNAMES[@]:+${GPGPARTNAMES[@]}}" "${NEXTPARTNAME}")
+                    GPGDEVNAMES=("${GPGDEVNAMES[@]:+${GPGDEVNAMES[@]}}" "${NEXTDEVNAME}")
+                    GPGPARTNUMS=("${GPGPARTNUMS[@]:+${GPGPARTNUMS[@]}}" "${NEXTPARTNUM}")
+                fi
             fi
         fi
     done
@@ -378,22 +394,24 @@ find_all_luks_partitions() {
     LUKSPARTNUMS=(); LUKSONUSBS=()
     local NEXTPART
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
-        if cryptsetup isLuks "${NEXTPART}"; then
-            NEXTPART="${NEXTPART,,}"
-            local NEXTUUID="${NEXTPART##*/}"
-            local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
-            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
-            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
-            local NEXTONUSB="0"
-            if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
-                NEXTONUSB="1"
+        if [ -e "${NEXTPART}" ]; then
+            if cryptsetup isLuks "${NEXTPART}"; then
+                NEXTPART="${NEXTPART,,}"
+                local NEXTUUID="${NEXTPART##*/}"
+                local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+                local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+                local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+                local NEXTONUSB="0"
+                if partuuid_is_on_usb_device "${NEXTUUID}"; then
+                    NEXTONUSB="1"
+                fi
+                # assign results (Bash treats arrays as unset if not assigned a value)
+                LUKSUUIDS=("${LUKSUUIDS[@]:+${LUKSUUIDS[@]}}" "${NEXTUUID}")
+                LUKSPARTNAMES=("${LUKSPARTNAMES[@]:+${LUKSPARTNAMES[@]}}" "${NEXTPARTNAME}")
+                LUKSDEVNAMES=("${LUKSDEVNAMES[@]:+${LUKSDEVNAMES[@]}}" "${NEXTDEVNAME}")
+                LUKSPARTNUMS=("${LUKSPARTNUMS[@]:+${LUKSPARTNUMS[@]}}" "${NEXTPARTNUM}")
+                LUKSONUSBS=("${LUKSONUSBS[@]:+${LUKSONUSBS[@]}}" "${NEXTONUSB}")
             fi
-            # assign results (Bash treats arrays as unset if not assigned a value)
-            LUKSUUIDS=("${LUKSUUIDS[@]:+${LUKSUUIDS[@]}}" "${NEXTUUID}")
-            LUKSPARTNAMES=("${LUKSPARTNAMES[@]:+${LUKSPARTNAMES[@]}}" "${NEXTPARTNAME}")
-            LUKSDEVNAMES=("${LUKSDEVNAMES[@]:+${LUKSDEVNAMES[@]}}" "${NEXTDEVNAME}")
-            LUKSPARTNUMS=("${LUKSPARTNUMS[@]:+${LUKSPARTNUMS[@]}}" "${NEXTPARTNUM}")
-            LUKSONUSBS=("${LUKSONUSBS[@]:+${LUKSONUSBS[@]}}" "${NEXTONUSB}")
         fi
     done
 
@@ -405,22 +423,24 @@ find_all_efi_system_partitions() {
     EFIPARTNUMS=(); EFIONUSBS=()
     local NEXTPART
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
-        NEXTPART="${NEXTPART,,}"
-        local NEXTUUID="${NEXTPART##*/}"
-        local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
-        local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
-        local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
-        local NEXTONUSB="0"
-        if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${NEXTPART}"); then
-            NEXTONUSB="1"
-        fi
-        if grep -qi 'EFI System' <(sgdisk --info "${NEXTPARTNUM}" "${NEXTDEVNAME}"); then
-            # assign results (Bash treats arrays as unset if not assigned a value)
-            EFIUUIDS=("${EFIUUIDS[@]:+${EFIUUIDS[@]}}" "${NEXTUUID}")
-            EFIPARTNAMES=("${EFIPARTNAMES[@]:+${EFIPARTNAMES[@]}}" "${NEXTPARTNAME}")
-            EFIDEVNAMES=("${EFIDEVNAMES[@]:+${EFIDEVNAMES[@]}}" "${NEXTDEVNAME}")
-            EFIPARTNUMS=("${EFIPARTNUMS[@]:+${EFIPARTNUMS[@]}}" "${NEXTPARTNUM}")
-            EFIONUSBS=("${EFIONUSBS[@]:+${EFIONUSBS[@]}}" "${NEXTONUSB}")
+        if [ -e "${NEXTPART}" ]; then
+            NEXTPART="${NEXTPART,,}"
+            local NEXTUUID="${NEXTPART##*/}"
+            local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
+            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
+            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+            local NEXTONUSB="0"
+            if partuuid_is_on_usb_device "${NEXTUUID}"; then
+                NEXTONUSB="1"
+            fi
+            if grep -qi 'EFI System' <(sgdisk --info "${NEXTPARTNUM}" "${NEXTDEVNAME}"); then
+                # assign results (Bash treats arrays as unset if not assigned a value)
+                EFIUUIDS=("${EFIUUIDS[@]:+${EFIUUIDS[@]}}" "${NEXTUUID}")
+                EFIPARTNAMES=("${EFIPARTNAMES[@]:+${EFIPARTNAMES[@]}}" "${NEXTPARTNAME}")
+                EFIDEVNAMES=("${EFIDEVNAMES[@]:+${EFIDEVNAMES[@]}}" "${NEXTDEVNAME}")
+                EFIPARTNUMS=("${EFIPARTNUMS[@]:+${EFIPARTNUMS[@]}}" "${NEXTPARTNUM}")
+                EFIONUSBS=("${EFIONUSBS[@]:+${EFIONUSBS[@]}}" "${NEXTONUSB}")
+            fi
         fi
     done
 }
@@ -766,7 +786,7 @@ show_efi_system_partitions() {
             fi
             if ((USINGEFI==0)); then
                 ISWIN="???"
-            elif [[ "${HASWINBOOTLOADER[${NEXTUUID}]+_}" && "${HASWINBOOTLOADER[${NEXTUUID}]}" == "1" ]]; then
+            elif [[ "${HASWINBOOTLOADER[${NEXTUUID}]-0}" == "1" ]]; then
                 ISWIN=" Y "
             fi
             printf "%2d) %-36s %-10s %-3s %-3s %3s\n" $((I+1)) "${EFIUUIDS[$I]}" \
@@ -1207,7 +1227,7 @@ conform_efi_boot_order_if_possible() {
     local PARTNUM="${PARTNAME##*[^[:digit:]]}"            # e.g. 3
     local BOOTLABEL
     # label will reflect if desired EFI partition is on USB or not
-    if grep -qi 'ID_BUS=[^=]*USB' <(udevadm info --query=all "${EFIPARTPATH}"); then
+    if partuuid_is_on_usb_device "${EFIPARTUUID}"; then
         BOOTLABEL="Gentoo Linux (USB Key)"
     else
         BOOTLABEL="Gentoo Linux (Internal Drive)"
@@ -1293,7 +1313,7 @@ ensure_efi_partition_mounted() {
         fi
     fi
     check_partuuid_exists "${EFIPARTUUID}"
-    if partuuid_is_on_usb_device "${EFIPATHMAP}"; then
+    if partuuid_is_on_usb_device "${EFIPARTUUID}"; then
         USINGUSBKEYFOREFI=1
         EFIPARTNAME="EFI boot USB key"
     else
@@ -1829,6 +1849,7 @@ process_command_line_options() {
 # *************** start of script proper ***************
 suppress_colour_if_output_not_to_a_terminal
 check_if_booted_under_efi
+find_all_usb_partitions
 source_etc_conf_file
 process_command_line_options "${@}"
 ask_whether_to_proceed
