@@ -10,7 +10,7 @@ To facilitate this, **buildkernel** will create a statically linked version of *
 
 It will also automatically set the necessary kernel configuration parameters, including the command line, sign the resulting kernel if possible, then update the EFI boot list if required.
 
-The **buildkernel** utility can be invoked in non-interative (default) or interactive mode (see the **--ask** option, in the manpage). Non-interactive mode is suitable for use in a scripted invocation.
+The **buildkernel** utility can be invoked in non-interactive (default) or interactive mode (see the **--ask** option, in the manpage). Non-interactive mode is suitable for use in a scripted invocation.
 
 Certain key options can be specified via the configuration file, _/etc/buildkernel.conf_: see **buildkernel.conf**(5) for details.
 
