@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.1"
+VERSION="1.0.2"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
@@ -1267,16 +1267,18 @@ conform_efi_boot_order_if_possible() {
 check_key_file_if_on_efi_system_partition () {
     # We check for the presence of a key file ONLY if it is on the EFI system 
     # partition, as this must be mounted on entry to this function
-    if [[ "${KEYFILEPARTUUID}" == "${EFIPARTUUID}" ]]; then
-        # keyfile should be on our already-mounted partition
-        if [ ! -s "${EFIROOTDIR}/${LUKSKEYFILE}" ]; then
-            die "The ${EFIPARTNAME} does not contain a LUKS key file"
+    if [ -n "${LUKSKEYFILE}" ]; then
+        if [[ "${KEYFILEPARTUUID}" == "${EFIPARTUUID}" ]]; then
+            # keyfile should be on our already-mounted partition
+            if [ ! -s "${EFIROOTDIR}/${LUKSKEYFILE}" ]; then
+                die "The ${EFIPARTNAME} does not contain a LUKS key file"
+            fi
+        else
+            warning "Your keyfile partition is != the EFI system partition"
+            warning "Please ensure that ${LUKSKEYFILE} is present, on partition"
+            warning "${KEYFILEPARTUUID},"
+            warning "before attemping to reboot"
         fi
-    else
-        warning "Your keyfile partition is != the EFI system partition"
-        warning "Please ensure that ${LUKSKEYFILE} is present, on partition"
-        warning "${KEYFILEPARTUUID},"
-        warning "before attemping to reboot"
     fi
 }
 ensure_efi_partition_mounted() {
