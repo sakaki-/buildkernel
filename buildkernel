@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.2"
+VERSION="1.0.3"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
@@ -67,15 +67,20 @@ CMDLINE_REAL_RESUME="/dev/mapper/vg1-swap"
 # you can use xconfig etc if you like - override in /etc/buildkernel.conf
 CONFIGTYPE="menuconfig"
 # following should already be in the environment; but to be safe...
-NUMCPUS=$(grep -E 'processor\s+:' /proc/cpuinfo | wc -l)
-NUMCPUSPLUSONE=$(( NUMCPUS + 1 ))
+export NUMCPUS=$(grep -E 'processor\s+:' /proc/cpuinfo | wc -l)
+export NUMCPUSPLUSONE=$(( NUMCPUS + 1 ))
+export MAKEOPTS="${MAKEOPTS--j${NUMCPUSPLUSONE} -l${NUMCPUS}}"
+export EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS---jobs=${NUMCPUSPLUSONE} --load-average=${NUMCPUS}}"
 # below silently updates an old config, auto-choosing defaults for new values
 CONFIGUPDATETYPE="olddefconfig"
 SILENTUPDATETYPE="olddefconfig"
-RED_TEXT="$(tput setaf 1)$(tput bold)"
-GREEN_TEXT="$(tput setaf 2)$(tput bold)"
-YELLOW_TEXT="$(tput setaf 3)$(tput bold)"
-RESET_ATTS="$(tput sgr0)"
+RED_TEXT="" GREEN_TEXT="" YELLOW_TEXT="" RESET_ATTS=""
+if [[ -v TERM && -n "${TERM}" && "${TERM}" != "dumb" ]]; then
+    RED_TEXT="$(tput setaf 1)$(tput bold)"
+    GREEN_TEXT="$(tput setaf 2)$(tput bold)"
+    YELLOW_TEXT="$(tput setaf 3)$(tput bold)"
+    RESET_ATTS="$(tput sgr0)"
+fi
 # used in subshells
 UNCOMPRESSEDINITRAMFS="${BOOTDIR}/initramfs.cpio"
 INITRAMFSDIR="${BOOTDIR}/initramfs"
