@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.3"
+VERSION="1.0.4"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
@@ -484,6 +484,10 @@ find_all_efi_boot_entries() {
         NEXTPATH="${NEXTPATH:5:-1}"
         local NEXTNAME="$(efibootmgr | grep "^${NEXTSIG}" | cut -c11-)"
         NEXTUUID="${NEXTUUID,,}"
+        if [[ -z "${NEXTID}" || -z "${NEXTNAME}" || -z "${NEXTPATH}" || -z "${NEXTUUID}" || -z "${NEXTISACTIVE}" ]]; then
+            # one of the required strings is empty, we cannot use this line
+            continue
+        fi
         # assign results (Bash treats arrays as unset if not assigned a value)
         EBOOTIDS=("${EBOOTIDS[@]:+${EBOOTIDS[@]}}" "${NEXTID}")
         EBOOTNAMES=("${EBOOTNAMES[@]:+${EBOOTNAMES[@]}}" "${NEXTNAME}")
