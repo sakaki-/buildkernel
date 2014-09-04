@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.4: August 2014"
+.TH BUILDKERNEL 8 "Version 1.0.5: September 2014"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -121,6 +121,14 @@ is specified, only copying.
 .BR \-h ", " \-\-help
 Displays a short help screen, and exits.
 .TP
+.BR \-i ", " \-\-is\-new\-kernel\-available
+Returns an exit code of 0 if there is a kernel built in the staging area with
+the same version as the kernel tree pointed to by \fI/usr/src/linux\fR,
+\fBand\fR this is different to the version of the currently running kernel.
+(Note, this does not check whether the kernel has been copied to the EFI
+system partition.)
+Returns an exit code of 1 otherwise.
+.TP
 .BR \-m ", " \-\-menuconfig
 Specifies that the GUI-based kernel configuration step (\fBmake menuconfig\fR)
 should be performed at the appropriate stage in the process
@@ -191,6 +199,13 @@ The exit status is 0 if the kernel build completed successfully, and 1 otherwise
 \fBbuildkernel\fR currently executes the kernel build process as the root user.
 It would be a little more hygienic to build as a non-priveleged user, and then
 install as root.
+
+Note also that if have installed a package that uses external modules (such as
+VirtualBox), you will need to re-run \fBemerge @module-rebuild\fR once rebooted
+under your new kernel (as this set takes its version from the
+currently running kernel).
+A post-reboot run of \fBgenup\fR(8) will achieve this.
+
 .SH COPYRIGHT
 .nf
 Copyright \(co 2014 sakaki
