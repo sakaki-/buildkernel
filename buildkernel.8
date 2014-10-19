@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.6: October 2014"
+.TH BUILDKERNEL 8 "Version 1.0.7: October 2014"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -55,11 +55,11 @@ calls your user hook function \fBuser_conform_config_file\fR if you have defined
 .IP \(bu 2
 allows you to modify the resulting configuration using the standard \fBmake menuconfig\fR tool (you can force this to happen, even in non-interactive mode, with \fB--menuconfig\fR, and you will be asked whether you wish to do so in interactive mode (set by \fB--ask\fR)); if you choose not to run \fBmake menuconfig\fR, \fBmake olddefconfig\fR will be run instead (which silently sanitizes/upgrades the conformed \fB.config\fR);
 .IP \(bu 2
-cleans the kernel tree (you can force this with \fB--clean\fR, and you will be asked whether you wish to do so in interactive mode (set by \fB--ask\fR));
+cleans the kernel tree (if you specify \fB--clean\fR; you will be asked whether you wish to do so in interactive mode (set by \fB--ask\fR));
 .IP \(bu 2
 builds the kernel, and its modules, with the specified configuration; in this first pass, an empty initramfs is used (since it must be incorporated in the kernel, to be protected by UEFI secure boot, but we don't have everything necessary to include in it, yet!);
 .IP \(bu 2
-builds any external modules (such as those required for VirtualBox), using \fBemerge @module-rebuild\fR;
+builds any external modules (such as those required for VirtualBox), using \fBemerge @module-rebuild\fR, if you so specify (using the option \fB--rebuild-external-modules\fR);
 .IP \(bu 2
 creates a first cut of the initramfs using \fBgenkernel\fR(8) (see below for more details); this will contain \fBgenkernel\fR(8)'s \fBinit\fR(8) script, compiled modules, any necessary firmware (if you haven't deblobbed), and a minimal set of binaries; it does \fInot\fR at this point contain a static copy of \fBgpg\fR;
 .IP \(bu 2
@@ -164,6 +164,14 @@ b) in interactive mode, ask you whether or not you wish to unmount.
 .TP
 .BR \-v ", " \-\-verbose
 Provides more verbose output from invoked tools, where possible.
+.TP
+.BR \-x ", " \-\-rebuild\-external\-modules
+Specifies that external modules (such as those required by VirtualBox) should
+be rebuilt (using \fBemerge @module-rebuild\fR)
+at the appropriate stage in the process (see \fBALGORITHM DETAIL\fR, above).
+However, note that if you are upgrading a kernel,
+it is best to defer this step until rebooted into
+the new kernel (for example, by running \fBgenup\fR(8), post-reboot).
 .TP
 .BR \-V ", " \-\-version
 Displays the version number of \fBbuildkernel\fR, and exits.
