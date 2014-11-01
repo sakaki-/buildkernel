@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.7"
+VERSION="1.0.8"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 NEWVERSION="$(basename $(realpath "/usr/src/linux"))"
@@ -130,6 +130,8 @@ declare -A ALLMOUNTS
 declare -A ISUSBPART
 # used by menu-driven config setting
 declare -i CONFIGDIRTY=0
+# set if CRYPTPATHMAP declared in config file
+declare -i CRYPTPATHMAPFORCED=0
 # archived prior versions of key config variables
 PROCVARS=("EFIPARTUUID" "CRYPTPARTUUID" "KEYFILEPARTUUID" "LUKSKEYFILE" \
     "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP")
@@ -260,7 +262,7 @@ umount_all_remembered_mountpoints() {
     done
 }
 check_is_luks_volume() {
-    cryptsetup isLuks "${1}" || die "Partition with UUID '${1}' is not a LUKS volume"
+    cryptsetup isLuks "${1}" || die "Path '${1}' is not a LUKS volume"
 }
 partuuid_is_on_usb_device() {
     local CANONPART="$(readlink --canonicalize "${PARTUUIDDEVDIR}/${1,,}")"
@@ -296,10 +298,18 @@ source_etc_conf_file() {
     if [[ -v KEYFILEPARTUUID ]]; then
         KEYFILEPARTUUID="${KEYFILEPARTUUID,,}"
     fi
+    # remember if CRYPTPATHMAP set
+    if [[ -v CRYPTPATHMAP ]]; then
+        CRYPTPATHMAPFORCED=1
+    fi
 }
 setup_final_variables() {
     # post-processing once buildkernel.conf loaded
     # critical that EFIPARTUUID and CRYPTPARTUUID are defined...
+    # (NB - buildkernel now also supports a LUKS filesystem that does not live
+    # in a GPT partition - you can simply override CRYPTPATHMAP directly in
+    # buildkernel.conf. If you set this, then CRYPTPARTUUID will not be checked
+    # and its contents (if any) will be ignored.)
     if [ -z ${EFIPARTUUID+xxx} ]; then
         warning "EFIPARTUUID not set in ${CONFFILE}"
         if test_yn "Would you like to run --easy-setup now to fix this"; then
@@ -309,7 +319,17 @@ setup_final_variables() {
             die "Cannot proceed; please edit ${CONFFILE} manually"
         fi
     fi
-    if [ -z ${CRYPTPARTUUID+xxx} ]; then
+    if ((CRYPTPATHMAPFORCED==1)); then
+        if [ -z "${CRYPTPATHMAP}" ]; then
+            die "CRYPTPATHMAP set to empty string in ${CONFFILE}; cannot proceed"
+        fi
+        warning "CRYPTPATHMAP defined in ${CONFFILE}"
+        warning "CRYPTPARTUUID will be ignored"
+        # check it
+        if ! cryptsetup isLuks "${CRYPTPATHMAP}"; then
+            die "CRYPTPATHMAP ('${CRYPTPATHMAP}') does not specify a LUKS filesystem"
+        fi
+    elif [ -z ${CRYPTPARTUUID+xxx} ]; then
         warning "CRYPTPARTUUID not set in ${CONFFILE}"
         if test_yn "Would you like to run --easy-setup now to fix this"; then
             interactively_set_buildkernel_config
@@ -324,7 +344,9 @@ setup_final_variables() {
         PLYMOUTHTHEME=""
     fi
     EFIPATHMAP="${PARTUUIDDEVDIR}/${EFIPARTUUID}"
-    CRYPTPATHMAP="${PARTUUIDDEVDIR}/${CRYPTPARTUUID}"
+    if ((CRYPTPATHMAPFORCED==0)); then
+        CRYPTPATHMAP="${PARTUUIDDEVDIR}/${CRYPTPARTUUID}"
+    fi # otherwise, leave it as set
     # assume keyfile is also on the EFI system partition, unless KEYFILEPARTUUID
     # has been set explicitly in buildkernel.conf
     KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
@@ -526,7 +548,14 @@ warn_if_buildkernel_config_incomplete() {
         warning "EFIPARTUUID not set in ${CONFFILE}"
         WILLRUN=0
     fi
-    if [[ ! -v CRYPTPARTUUID ]]; then
+    if ((CRYPTPATHMAPFORCED==1)); then
+        if [ -z "${CRYPTPATHMAP}" ]; then
+            warning "CRYPTPATHMAP set to empty string in ${CONFFILE}"
+            WILLRUN=0
+        fi
+        warning "CRYPTPATHMAP defined in ${CONFFILE}"
+        warning "CRYPTPARTUUID will be ignored"
+    elif [[ ! -v CRYPTPARTUUID ]]; then
         warning "CRYPTPARTUUID not set in ${CONFFILE}"
         WILLRUN=0
     fi
@@ -720,7 +749,12 @@ show_current_key_config_status() {
     show "Current configuration (from ${CONFFILE}${MODFLAG}):"
     printf "\n"
     printf "  EFI system partition UUID:  %-36s\n" "${EFIPARTUUID:-NEEDS SETTING}"
-    printf "  LUKS root partition UUID:   %-36s\n" "${CRYPTPARTUUID:-NEEDS SETTING}"
+    if ((CRYPTPATHMAPFORCED==0)); then
+        printf "  LUKS root partition UUID:   %-36s\n" "${CRYPTPARTUUID:-NEEDS SETTING}"
+    else
+        printf "  LUKS root partition UUID:   %-36s\n" "IGNORED, OVERRIDDEN BY CRYPTPATHMAP"
+        printf "    (to '%s')\n" "${CRYPTPATHMAP}"
+    fi
     printf "  GPG keyfile partition UUID: %-36s\n" "${KEYFILEPARTUUID:-DEFAULT (=EFI system partition UUID)}"
     printf "  GPG keyfile (for LUKS):     %-36s\n" "${LUKSKEYFILE:-NONE (using fallback passphrase)}"
     printf "  EFI boot directory:         %-36s\n" "${EFIBOOTDIR:-NEEDS SETTING}"
@@ -1175,7 +1209,6 @@ copy_file_from_partition_to_partition() {
 }
 ask_whether_to_proceed() {
     show "Secure-bootable EFI kernel build script"
-    check_partuuid_exists "${CRYPTPARTUUID}"
     check_is_luks_volume "${CRYPTPATHMAP}"
     if ((ARG_COPYFROMSTAGING==1)); then
         show "Will copy built kernel from ${BOOTDIR} to ${FULLEFIBOOTDIR}"

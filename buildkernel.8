@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.7: October 2014"
+.TH BUILDKERNEL 8 "Version 1.0.8: November 2014"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -196,9 +196,17 @@ partition is secured with by a
 \fBgpg\fR(1) encrypted keyfile. At boot, you are prompted to enter the
 passphrase for this file. Because both the keyfile, and a passphrase to unlock
 it, are required, dual-factor security is obtained.
+
+Also, please note that it is assumed that your \fBLUKS\fR filesystem exists on the
+partition of a GPT-formatted drive; if this is \fInot\fR the case (for example, if
+you have your \fBLUKS\fR filesystem on an MBR partition, or if you have luksFormat-ed
+a top-level drive, rather than a partition within it),
+then you should instead set the \fBLUKS\fR path directly, via the
+\fBCRYPTPATHMAP\fR variable (see the \fBbuildkernel.conf\fR(5) manpage).
+(Most users will \fInot\fR need to do this, however.)
 .br
 .PP
-Please see the \fB/etc/buildkernel.conf\fR(5) manpage for additional optional,
+Please see the \fBbuildkernel.conf\fR(5) manpage for additional optional,
 but important, variables which may be set (including \fBKEYMAP\fR to specify
 the early-boot keymap).
 .SH EXIT STATUS
