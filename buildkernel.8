@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.10: January 2015"
+.TH BUILDKERNEL 8 "Version 1.0.11: August 2015"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -14,7 +14,9 @@ Specifically, the assumed use-case for \fBbuildkernel\fR is where you are creati
 for use in a dual-factor-authenticated LVM-over-LUKS system, booting from an
 external USB key, with secure boot enabled (using UEFI), where you
 may (optionally) wish to use the \fBplymouth\fR(8) splash manager, and where
-the target (final) init system is  \fBsystemd\fR(8).
+the target (final) init system is  \fBsystemd\fR(1).
+(As of version 1.0.11, \fBOpenRC\fR(8) is also supported as a target
+init system.)
 
 To facilitate this, \fBbuildkernel\fR will create a statically linked version
 of \fBgpg\fR(1) \(em one which furthermore does not require \fBpinentry\fR \(em
@@ -208,7 +210,8 @@ then you should instead set the \fBLUKS\fR path directly, via the
 .PP
 Please see the \fBbuildkernel.conf\fR(5) manpage for additional optional,
 but important, variables which may be set (including \fBKEYMAP\fR to specify
-the early-boot keymap).
+the early-boot keymap, and \fBINITSYSTEM\fR, if targeting \fBOpenRC\fR(8) rather
+than the default \fBsystemd\fR(1)).
 .SH EXIT STATUS
 The exit status is 0 if the kernel build completed successfully, and 1 otherwise.
 .SH BUGS
@@ -245,4 +248,5 @@ sakaki \(em send bug reports or comments to <sakaki@deciban.com>
 .BR lvm (8),
 .BR plymouth (8),
 .BR umount (8),
+.BR openrc (8),
 .BR portage (5).

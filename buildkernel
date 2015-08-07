@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.10"
+VERSION="1.0.11"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -56,7 +56,9 @@ DEFAULTLUKSKEYFILE="luks-key.gpg"
 LUKSKEYFILE="${DEFAULTLUKSKEYFILE}"
 MODPROBEDIR="/etc/modprobe.d"
 CMDLINE_ROOT="/dev/ram0"
-CMDLINE_REAL_INIT="/usr/lib/systemd/systemd"
+SYSTEMD_INIT="/usr/lib/systemd/systemd"
+OPENRC_INIT="/sbin/init"
+CMDLINE_REAL_INIT="${SYSTEMD_INIT}"
 CMDLINE_DOLVM_FLAG="dolvm"
 SECUREBOOTKEY="/etc/efikeys/db.key"
 SECUREBOOTCERT="/etc/efikeys/db.crt"
@@ -103,6 +105,10 @@ KEYMAP="${DEFAULTKEYMAP}"
 # "solar"
 DEFAULTPLYMOUTHTHEME=""
 PLYMOUTHTHEME="${DEFAULTPLYMOUTHTHEME}"
+# default init system supported by this script is systemd, but we now
+# also support OpenRC
+DEFAULTINITSYSTEM="systemd"
+INITSYSTEM="${DEFAULTINITSYSTEM}"
 # following variable is conformed on installation by ebuild
 # (to reflect setting of "plymouth" USE flag)
 USE_PLYMOUTH=true
@@ -135,7 +141,7 @@ declare -i CONFIGDIRTY=0
 declare -i CRYPTPATHMAPFORCED=0
 # archived prior versions of key config variables
 PROCVARS=("EFIPARTUUID" "CRYPTPARTUUID" "KEYFILEPARTUUID" "LUKSKEYFILE" \
-    "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP")
+    "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP" "INITSYSTEM")
 NEXTVAR=""
 for NEXTVAR in "${PROCVARS[@]}"; do
     declare "OLD_${NEXTVAR}"=""
@@ -326,6 +332,10 @@ source_etc_conf_file() {
     if [[ -v CRYPTPATHMAP ]]; then
         CRYPTPATHMAPFORCED=1
     fi
+    # map INITSYSTEM to lower case
+    if [[ -v INITSYSTEM ]]; then
+        INITSYSTEM="${INITSYSTEM,,}"
+    fi
 }
 setup_final_variables() {
     # post-processing once buildkernel.conf loaded
@@ -371,6 +381,14 @@ setup_final_variables() {
     if ((CRYPTPATHMAPFORCED==0)); then
         CRYPTPATHMAP="${PARTUUIDDEVDIR}/${CRYPTPARTUUID}"
     fi # otherwise, leave it as set
+    # check if the user has specified an OpenRC init; if not, assume systemd
+    if [[ "${INITSYSTEM}" == "openrc" ]]; then
+        # need a different path for the init executable
+        CMDLINE_REAL_INIT="${OPENRC_INIT}"
+    elif [[ "${INITSYSTEM}" != "systemd" ]]; then
+        warning "Unrecognized INITSYSTEM, assuming systemd"
+        INITSYSTEM="systemd"
+    fi
     # assume keyfile is also on the EFI system partition, unless KEYFILEPARTUUID
     # has been set explicitly in buildkernel.conf
     KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
@@ -597,6 +615,7 @@ interactively_set_buildkernel_config() {
     declare -a TOPMENU=("Set EFI system partition" "Set LUKS root partition" \
         "Set LUKS key options" "Set EFI boot file path"\
         "Set boot splash options" "Set boot-time keymap" \
+        "Set init system" \
         "Exit without saving" "Save and exit")
     local X
     PS3="Your choice: "
@@ -612,6 +631,7 @@ interactively_set_buildkernel_config() {
                 "Set EFI boot file path") set_efi_boot_file_path; break ;;
                 "Set boot splash options") set_boot_splash_options; break ;;
                 "Set boot-time keymap") set_boot_time_keymap; break ;;
+                "Set init system") set_init_system; break ;;
                 "Exit without saving") DOEXIT=1; break ;;
                 "Save and exit") DOSAVE=1; DOEXIT=1; break ;;
                 *) warning "Please choose one of the menu options!"; break ;;
@@ -764,7 +784,7 @@ set_luks_root_partition() {
 }
 show_current_key_config_status() {
     # main things we need are: EFIPARTUUID, CRYPTPARTUUID, KEYFILEPARTUUID
-    # LUKSKEYFILE, EFIBOOTDIR, EFIBOOTFILE, PLYMOUTHTHEME and KEYMAP
+    # LUKSKEYFILE, EFIBOOTDIR, EFIBOOTFILE, PLYMOUTHTHEME, KEYMAP and INITSYSTEM
     local MODFLAG=""
     if ((CONFIGDIRTY==1)); then
         MODFLAG=" - MODIFIED"
@@ -783,8 +803,13 @@ show_current_key_config_status() {
     printf "  GPG keyfile (for LUKS):     %-36s\n" "${LUKSKEYFILE:-NONE (using fallback passphrase)}"
     printf "  EFI boot directory:         %-36s\n" "${EFIBOOTDIR:-NEEDS SETTING}"
     printf "  EFI boot file:              %-36s\n" "${EFIBOOTFILE:-NEEDS SETTING}"
-    printf "  Plymouth theme              %-36s\n" "${PLYMOUTHTHEME:-NONE (textual boot)}"
-    printf "  Boot-time keymap            %-36s\n" "${KEYMAP:-NEEDS SETTING}"
+    printf "  Plymouth theme:             %-36s\n" "${PLYMOUTHTHEME:-NONE (textual boot)}"
+    printf "  Boot-time keymap:           %-36s\n" "${KEYMAP:-NEEDS SETTING}"
+    if [[ "${INITSYSTEM}" == "systemd" ]]; then
+        printf "  Init system:                %-36s\n" "systemd"
+    else
+        printf "  Init system:                %-36s\n" "OpenRC"
+    fi
     printf "\n"
 }
 show_gpg_keyfile_partitions() {
@@ -891,6 +916,13 @@ show_boot_splash_status() {
         fi
     else
         show "Using textual boot (no Plymouth)"
+    fi
+}
+show_init_system_status() {
+    if [[ "${INITSYSTEM}" == "systemd" ]]; then
+        show "Targeting systemd init"
+    else
+        show "Targeting OpenRC init"
     fi
 }
 set_luks_key_options() {
@@ -1090,6 +1122,42 @@ set_boot_splash_options() {
                     PLYMOUTHTHEME="fade-in"
                     show "New boot splash settings:"
                     show_boot_splash_status
+                    DOEXIT=1
+                    break ;;
+                "GO BACK") DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+    done
+}
+set_init_system() {
+    # currently only two option are supported
+    local -i DOEXIT=0
+    declare -a INITSYSTEMSPLASHMENU=("systemd (select if unsure)" \
+        "OpenRC" "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Current init system settings:"
+        show_init_system_status
+        show "Please choose your desired init system setting (or GO BACK):"
+        select X in "${INITSYSTEMSPLASHMENU[@]}"; do
+            case "${X}" in
+                "systemd (select if unsure)")
+                    if [[ "${INITSYSTEM}" != "systemd" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    INITSYSTEM="systemd"
+                    show "New init system settings:"
+                    show_init_system_status
+                    DOEXIT=1
+                    break ;;
+                "OpenRC")
+                    if [[ "${INITSYSTEM}" != "openrc" ]]; then
+                        CONFIGDIRTY=1
+                    fi
+                    INITSYSTEM="openrc"
+                    show "New init system settings:"
+                    show_init_system_status
                     DOEXIT=1
                     break ;;
                 "GO BACK") DOEXIT=1; break ;;
@@ -1394,6 +1462,15 @@ enter_build_directory() {
     show "Proceeding - entering ${LINUXDIR}..."
     cd "${LINUXDIR}"
 }
+check_if_deblobbing() {
+    # run in kernel top-level directory
+    local EV=$(grep "^EXTRAVERSION =" Makefile)
+    if grep -q "\-gnu$" <<<"${EV}"; then
+        # we are deblobbing - fix up the initramfs name
+        show "Using a deblobbed kernel"
+        INITRAMFSNAME+="-gnu"
+    fi
+}
 copy_config_from_proc_if_necessary () {
     if [ ! -s "${TARGETCONFIG}" ]; then
         if ((ARG_ASK==1)); then
@@ -1418,9 +1495,13 @@ copy_config_from_proc_if_necessary () {
     fi
 }
 conform_config_file() {
+    if [[ "${INITSYSTEM}" == "openrc" ]]; then
+        show "Although we are targeting OpenRC init, systemd kernel flags will"
+        show "still be set, to provide future flexibility"
+    fi
     show "Setting Gentoo flags for systemd..."
     # our initial init is a script on the initramfs, which then hands off to
-    # systemd...
+    # systemd or openrc...
     set_kernel_config_list_to_y "GENTOO_LINUX GENTOO_LINUX_UDEV GENTOO_LINUX_INIT_SCRIPT GENTOO_LINUX_INIT_SYSTEMD"
     # set up a few additional flags recommended in the wiki, but not forced on
     # by the above
@@ -1960,6 +2041,7 @@ check_gcc_config_and_reset_if_necessary
 if_option_unset "ARG_STAGEONLY" ensure_efi_partition_mounted
 if ((ARG_COPYFROMSTAGING==0)); then    
     enter_build_directory
+    check_if_deblobbing
     copy_config_from_proc_if_necessary
     conform_config_file
     allow_user_to_modify_config_graphically

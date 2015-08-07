@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.10: January 2015"
+.TH BUILDKERNEL 5 "Version 1.0.11: August 2015"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -128,6 +128,15 @@ expects \fIonly\fR a Microsoft boot loader, you may have to change this path to
 \fI/EFI/Microsoft/Boot\fR.
 
 Most users will not need to override the default.
+.br
+.TP
+.BR INITSYSTEM
+If you are targeting \fBOpenRC\fR(8) (rather than \fBsystemd\fR(1)) boot,
+uncomment this variable, 
+and set it to \fB"openrc"\fR (the capitalization is unimportant).
+If left commented out, a value of \fB"systemd"\fR will be assumed.
+
+Most users will not need to override the default.
 .RE
 .SH FUNCTIONS
 The following hook functions \fImay\fR be specified in \fB/etc/buildkernel.conf\fR if
@@ -166,9 +175,11 @@ sakaki \(em send bug reports or comments to <sakaki@deciban.com>
 .BR bash (1),
 .BR cpio (1L),
 .BR gpg (1),
+.BR systemd (1),
 .BR cryptsetup (8),
 .BR genkernel (8),
 .BR init (8),
 .BR lvm (8),
 .BR plymouth (8),
+.BR openrc (8),
 .BR portage (5).
