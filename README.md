@@ -4,7 +4,9 @@ A tool to build a secure-boot EFI stub kernel, and save it to the EFI system par
 ## Description
 **buildkernel** is a script that builds a Gentoo Linux EFI stub kernel which is suitable for booting from a USB key using UEFI (no additional bootloader required). It makes use of the initramfs creation tools (and early userspace **init**(8) script) provided by **genkernel**(8).
 
-Specifically, the assumed use-case for buildkernel is where you are creating a kernel for use in a dual-factor-authenticated LVM-over-LUKS system, booting from an external USB key, with secure boot enabled (using UEFI), where you may (optionally) wish to use the **plymouth**(8) splash manager, and where the target (final) init system is **systemd**(1). (As of version 1.0.11, **OpenRC**(8) init is also supported.)
+Specifically, the assumed use-case for buildkernel is where you are creating a kernel for use in a dual-factor-authenticated LVM-over-LUKS system, booting from an external USB key, with secure boot enabled (using UEFI), where you may (optionally) wish to use the **plymouth**(8) splash manager, and where the target (final) init system is **systemd**(1).
+
+> Note: as of version 1.0.11, **OpenRC**(8) init is also supported.
 
 To facilitate this, **buildkernel** will create a statically linked version of **gpg**(1) — one which furthermore does not require pinentry — and include this in the initramfs.
 
