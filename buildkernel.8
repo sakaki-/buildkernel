@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.11: August 2015"
+.TH BUILDKERNEL 8 "Version 1.0.12: August 2015"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -92,6 +92,10 @@ performs a filesystem sync and then unmounts the EFI system partition (if you so
 .BR \-a ", " \-\-ask
 Sets interactive mode, in which you will be asked what to do at a number of
 key steps in the process (see \fBALGORITHM DETAIL\fR, above).
+.TP
+.BR \-A ", " \-\-alert
+If possible, sounds the terminal bell when interaction is needed.
+Selecting this option automatically selects \fB--ask\fR.
 .TP
 .BR \-b ", " \-\-snapshot\-backup
 Makes a backup of the current kernel and config on the EFI system partition,
