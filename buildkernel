@@ -2028,6 +2028,8 @@ process_command_line_options() {
     fi
     if ((ARG_ALERT==1)); then
         ALERTFLAG="--alert"
+    else
+        suppress_alert
     fi
     internal_consistency_option_checks
     # process 'perform-then-exit' options
