@@ -3,7 +3,7 @@
 # Build kernel, modules and initial ramdisk in correct sequence, ensuring kernel
 # config is conformed, then sign if possible and copy to EFI boot partition.
 #
-# Copyright (c) 2014-2015 sakaki <sakaki@deciban.com>
+# Copyright (c) 2014-2016 sakaki <sakaki@deciban.com>
 #
 # License (GPL v3.0)
 # ------------------
@@ -31,15 +31,15 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.13"
+VERSION="1.0.14"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
-NEWVERSION="linux-$(cat /usr/src/linux/include/config/kernel.release)"
+LINUXDIR="/usr/src/linux"
+NEWVERSION="linux-$(cd "${LINUXDIR}" && make -s kernelversion)"
 INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/g")"
 VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/g")"
 CURRENTVERSION="linux-$(uname -r)"
-LINUXDIR="/usr/src/linux"
 CURRENTCONFIG="/proc/config.gz"
 TARGETCONFIG="${LINUXDIR}/.config"
 BOOTDIR="/boot"
