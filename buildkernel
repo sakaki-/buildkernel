@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.14"
+VERSION="1.0.15"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -1393,8 +1393,15 @@ conform_efi_boot_order_if_possible() {
     # ok we do know about this partition, so find out its device path and
     # partition number, as we'll need this to invoke efibootmgr
     local PARTNAME="$(readlink --canonicalize "${EFIPARTPATH}")" # e.g. /dev/sda3
-    local DEVNAME="${PARTNAME%%[[:digit:]]*}"             # e.g. /dev/sda
-    local PARTNUM="${PARTNAME##*[^[:digit:]]}"            # e.g. 3
+    local DEVNAME
+    # nvme devices have paths of form e.g. /dev/nvme0n1p1
+    # standard drives have form e.g. /dev/sda3
+    if [[ ${PARTNAME} =~ ^/dev/nvme.*$ ]]; then
+        DEVNAME="${PARTNAME%%p[[:digit:]]*}"                # e.g. /dev/nvme0n1
+    else
+        DEVNAME="${PARTNAME%%[[:digit:]]*}"                 # e.g. /dev/sda
+    fi
+    local PARTNUM="${PARTNAME##*[^[:digit:]]}"              # e.g. 3
     local BOOTLABEL
     # label will reflect if desired EFI partition is on USB or not
     if partuuid_is_on_usb_device "${EFIPARTUUID}"; then
