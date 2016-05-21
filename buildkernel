@@ -1508,9 +1508,11 @@ check_if_deblobbing() {
     # run in kernel top-level directory
     local EV=$(grep "^EXTRAVERSION =" Makefile)
     if grep -q "\-gnu$" <<<"${EV}"; then
-        # we are deblobbing - fix up the initramfs name
+        # we are deblobbing - fix up the initramfs name if necessary
         show "Using a deblobbed kernel"
-        INITRAMFSNAME+="-gnu"
+        if [[ "${INITRAMFSNAME}" != *-gnu ]]; then
+            INITRAMFSNAME+="-gnu"
+        fi
     fi
 }
 copy_config_from_proc_if_necessary () {
@@ -1831,7 +1833,7 @@ backup_prior_efi_kernel_if_present() {
     if ((BACKUPOLDKERNEL==1)); then
         # now backup any prior kernel
         if [ -s "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" ]; then
-            show "Backing up old bootfile in case of failure..."
+            show "Backing up bootfile in case of failure..."
             cp ${VERBOSITYFLAG} -f "${FULLEFIBOOTDIR}/${EFIBOOTFILE}" "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFIBOOTFILE}${OLDSUFFIX}"
         fi
     fi
@@ -1840,7 +1842,7 @@ backup_prior_config_if_present() {
     local FILEPREFIX=${1:-""}
     if ((BACKUPOLDKERNEL==1)); then
         if [ -s "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" ]; then
-            show "Backing up old config in case of failure..."
+            show "Backing up config in case of failure..."
             cp ${VERBOSITYFLAG} -f "${FULLEFIBOOTDIR}/${EFICONFIGFILE}" "${FULLEFIBOOTDIR}/${FILEPREFIX}${EFICONFIGFILE}${OLDSUFFIX}"
         fi
     fi
