@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.15"
+VERSION="1.0.16"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -439,6 +439,10 @@ setup_final_variables() {
     KERNEL_CMD_LINE+="keymap=${KEYMAP}"
     if [ -n "${PLYMOUTHTHEME}" ]; then
         KERNEL_CMD_LINE+=" quiet splash"
+        if [[ "${INITSYSTEM}" == "systemd" ]]; then
+            # make sure systemd doesn't print a version number during early boot
+            KERNEL_CMD_LINE+=" udev.log-priority=3"
+        fi
     fi
     if [ -n "${ADDITIONALKERNELCMDS}" ]; then
         KERNEL_CMD_LINE+=" ${ADDITIONALKERNELCMDS}"
