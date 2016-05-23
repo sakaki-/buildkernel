@@ -1699,7 +1699,7 @@ create_initramfs_using_genkernel() {
     genkernel --install --no-mountboot \
         --luks --lvm  --no-gpg --udev ${POSTCLEAR_FLAG} \
         --kernel-config="${TARGETCONFIG}" --busybox \
-        --no-compress-initramfs --all-ramdisk-modules --firmware \
+        --no-compress-initramfs \
         ${PLYMOUTH_OPTS} initramfs
     cp ${VERBOSITYFLAG} "${BOOTDIR}/${INITRAMFSNAME}" "${UNCOMPRESSEDINITRAMFS}"
 }
