@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.17: May 2016"
+.TH BUILDKERNEL 8 "Version 1.0.18: January 2017"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -146,6 +146,15 @@ b) in interactive move, ask you whether or not you wish to \fBmake menuconfig\fR
 .BR \-p ", " \-\-postclear
 Clears all \fBgenkernel\fR(8) temporary files and caches after run.
 .TP
+.BR \-r ", " \-\-adjustment\=N
+Specifies the \fBnice\fR(1) adjustment value N (-20<=N<=19) under which
+to run \fBmake\fR(1) operations.
+
+If this option is unspecified, the default niceness adjustment value is 19,
+which causes invoked makes to run at the lowest possible
+priority; this is useful to prevent \fBbuildkernel\fR clogging up your
+system. Be careful about using negative values!
+.TP
 .BR \-s ", " \-\-stage\-only
 When this option is specified, \fBbuildkernel\fR will create the kernel in
 the \fI/boot\fR staging directory as usual, but will not copy the result across
@@ -231,7 +240,7 @@ A post-reboot run of \fBgenup\fR(8) will achieve this.
 
 .SH COPYRIGHT
 .nf
-Copyright \(co 2014-2016 sakaki
+Copyright \(co 2014-2017 sakaki
 License GPLv3+ (GNU GPL version 3 or later)
 <http://gnu.org/licenses/gpl.html>
 
@@ -244,6 +253,7 @@ sakaki \(em send bug reports or comments to <sakaki@deciban.com>
 .BR emerge (1),
 .BR gpg (1),
 .BR make (1),
+.BR nice (1),
 .BR systemd (1),
 .BR cryptsetup (8),
 .BR genkernel (8),
