@@ -68,6 +68,8 @@ ADDITIONALGENKERNELOPTS="--all-ramdisk-modules --firmware"
 CMDLINE_ROOTFSTYPE="ext4"
 CMDLINE_REAL_ROOT="/dev/mapper/vg1-root"
 CMDLINE_REAL_RESUME="/dev/mapper/vg1-swap"
+declare -i DEFAULTCREATEEFIBOOT=1
+declare -i CREATEEFIBOOT="${DEFAULTCREATEEFIBOOT}"
 # you can use xconfig etc if you like - override in /etc/buildkernel.conf
 CONFIGTYPE="menuconfig"
 # following should already be in the environment; but to be safe...
@@ -99,6 +101,7 @@ GPGBUILDDIR="/root/tmpgpgbuild"
 TMPGPGPATH="${GPGBUILDDIR}/usr/bin/gpg"
 declare -i USINGUSBKEYFOREFI=0
 declare -i BACKUPOLDKERNEL=1
+
 EFIPARTNAME="EFI boot partition"
 DEFAULTKEYMAP="us"
 KEYMAP="${DEFAULTKEYMAP}"
@@ -1386,7 +1389,11 @@ conform_efi_boot_order_if_possible() {
         find_all_efi_boot_entries
     fi
     # are we already at the top?
-    declare -i NEWBOOTENTRYNEEDED=1
+    if	((CREATEEFIBOOT==1)); then
+    		declare -i NEWBOOTENTRYNEEDED=1
+	else
+		declare -i NEWBOOTENTRYNEEDED=0
+    fi
     local SMBOOTPATH="${EFIBOOTDIR}/${EFIBOOTFILE}"
     # locate the EFIPARTUUID, if possible
     local EFIPARTPATH="${PARTUUIDDEVDIR}/${EFIPARTUUID}"

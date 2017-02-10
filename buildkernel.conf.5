@@ -148,6 +148,16 @@ and set it to \fB"openrc"\fR (the capitalization is unimportant).
 If left commented out, a value of \fB"systemd"\fR will be assumed.
 
 Most users will not need to override the default.
+
+.br
+.TP
+.BR CREATEEFIBOOT
+When set to \fB0\fR the \fBbuildkernel\fR script will not create or modify EFI boot
+settings. When unset this option defaults to \fB1\fR and running the \fBbuildkernel\fR 
+checks whether the EFI boot settings need to be updated. Set to \fB0\fR if you have
+your own EFI bootloader or want to manually insert the correct EFI boot settings.
+
+Most users will not need to override the default.
 .RE
 .SH FUNCTIONS
 The following hook functions \fImay\fR be specified in \fB/etc/buildkernel.conf\fR if
