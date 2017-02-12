@@ -1385,15 +1385,17 @@ conform_efi_boot_order_if_possible() {
         # nothing more we can do
         return 0
     fi
+    if ((CREATEEFIBOOT==0)); then
+        warning "Not setting up, or checking, EFI boot entry"
+        warning "(as CREATEEFIBOOT=0 set in ${CONFFILE})"
+        # nothing more we can do
+        return 0
+    fi
     if ((EFIBOOTENTRIESSEARCHED==0)); then
         find_all_efi_boot_entries
     fi
     # are we already at the top?
-    if	((CREATEEFIBOOT==1)); then
-    		declare -i NEWBOOTENTRYNEEDED=1
-	else
-		declare -i NEWBOOTENTRYNEEDED=0
-    fi
+    declare -i NEWBOOTENTRYNEEDED=1
     local SMBOOTPATH="${EFIBOOTDIR}/${EFIBOOTFILE}"
     # locate the EFIPARTUUID, if possible
     local EFIPARTPATH="${PARTUUIDDEVDIR}/${EFIPARTUUID}"
