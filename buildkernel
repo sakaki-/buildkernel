@@ -1586,6 +1586,9 @@ conform_config_file() {
     # modules really, since we copy all modules into the initramfs
     show "Ensuring Serpent, Whirlpool and SHA-512 are included..."
     set_kernel_config_list_to_y "CRYPTO_SERPENT CRYPTO_WP512 CRYPTO_SHA512"
+    # the EFI system system partition is formatted FAT...
+    show "Ensuring VFAT file system support included..."
+    set_kernel_config_list_to_y "VFAT_FS"
     show "Ensuring device mapper and crypt target support are included..."
     set_kernel_config_list_to_y "BLK_DEV_DM DM_CRYPT"
     show "Ensuring kernel makes config available under /proc..."
