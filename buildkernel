@@ -31,14 +31,14 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.19"
+VERSION="1.0.20"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
 LINUXDIR="/usr/src/linux"
-NEWVERSION="linux-$(cd "${LINUXDIR}" && make -s kernelversion)"
-INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/g")"
-VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/g")"
+NEWVERSION=""
+INITRAMFSNAME=""
+VMLINUZNAME=""
 CURRENTVERSION="linux-$(uname -r)"
 CURRENTCONFIG="/proc/config.gz"
 TARGETCONFIG="${LINUXDIR}/.config"
@@ -262,6 +262,16 @@ read_portage_info_if_necessary() {
         show "Checking Portage configuration, please wait..."
         PORTAGEINFO="$(emerge --info)"
     fi
+}
+extract_kernel_release_name() {
+    # extract the kernel release string, and setup the derived strings
+    # NB we now check kernelrelease, not kernelversion; it is possible that
+    # the kernelrelease may change during the build (e.g., by a 'clean'
+    # tagged release directory becoming marked 'dirty', and so having a '+'
+    # sign appended)
+    NEWVERSION="linux-$(cd "${LINUXDIR}" && make -s kernelrelease)"
+    INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/")"
+    VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/")"
 }
 check_gcc_config_and_reset_if_necessary() {
     # check if gcc-config exists with an error - if it does, then
@@ -1521,17 +1531,6 @@ enter_build_directory() {
     show "Proceeding - entering ${LINUXDIR}..."
     cd "${LINUXDIR}"
 }
-check_if_deblobbing() {
-    # run in kernel top-level directory
-    local EV=$(grep "^EXTRAVERSION =" Makefile)
-    if grep -q "\-gnu$" <<<"${EV}"; then
-        # we are deblobbing - fix up the initramfs name if necessary
-        show "Using a deblobbed kernel"
-        if [[ "${INITRAMFSNAME}" != *-gnu ]]; then
-            INITRAMFSNAME+="-gnu"
-        fi
-    fi
-}
 copy_config_from_proc_if_necessary () {
     if [ ! -s "${TARGETCONFIG}" ]; then
         if ((ARG_ASK==1)); then
@@ -1717,6 +1716,9 @@ create_initramfs_using_genkernel() {
         --kernel-config="${TARGETCONFIG}" --busybox \
         --no-compress-initramfs ${ADDITIONALGENKERNELOPTS} \
         ${PLYMOUTH_OPTS} initramfs
+    # re-extract release details, in case these have changed
+    # (e.g. due to 'SCM dirty suffix' having been added (a '+' sign))
+    extract_kernel_release_name
     cp ${VERBOSITYFLAG} "${BOOTDIR}/${INITRAMFSNAME}" "${UNCOMPRESSEDINITRAMFS}"
 }
 unpack_initramfs() {
@@ -2116,6 +2118,7 @@ process_command_line_options() {
 
 # *************** start of script proper ***************
 suppress_colour_and_alert_if_output_not_to_a_terminal
+extract_kernel_release_name
 check_if_booted_under_efi
 find_all_usb_partitions
 source_etc_conf_file
@@ -2126,7 +2129,6 @@ check_gcc_config_and_reset_if_necessary
 if_option_unset "ARG_STAGEONLY" ensure_efi_partition_mounted
 if ((ARG_COPYFROMSTAGING==0)); then    
     enter_build_directory
-    check_if_deblobbing
     copy_config_from_proc_if_necessary
     conform_config_file
     allow_user_to_modify_config_graphically
