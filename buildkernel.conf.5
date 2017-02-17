@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.20: February 2017"
+.TH BUILDKERNEL 5 "Version 1.0.21: February 2017"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -48,9 +48,9 @@ Also, please note that it is assumed that your \fBLUKS\fR filesystem exists on t
 partition of a GPT-formatted drive; if this is \fInot\fR the case (for example, if
 you have your \fBLUKS\fR filesystem on an MBR partition, or if you have luksFormat-ed
 a top-level drive, rather than a partition within it), then you should instead
-set the \fBLUKS\fR path directly, via the
-\fBCRYPTPATHMAP\fR variable (see below).
-(Most users will \fInot\fR need to do this, however.)
+\fIeither\fR set the \fBLUKS\fR path directly, via the
+\fBCRYPTPATHMAP\fR variable, \fIor\fR set \fBGPTMODE="permissive"\fR (see below).
+(Most users will \fInot\fR need to do either, however.)
 .RE
 
 The following variables are optional, and \fImay\fR be set 
@@ -64,7 +64,9 @@ partition, then you can uncomment this variable, and set it to
 the correct path directly (where possible, use \fI/dev/disk/by-uuid/<...>\fR
 as the value). This feature is provided as a convenience only; most users should
 not need to use it (and so should leave the \fBCRYPTPATHMAP\fR variable
-commented out).
+commented out). If you \fIdo\fR need to use this facility, consider setting
+\fBGPTMODE="permissive"\fR instead (see below), as this is supported by
+\fBbuildkernel --easy-setup\fR's menu system.
 .br
 .TP
 .BR KEYFILEPARTUUID
@@ -103,6 +105,16 @@ the the desired options (which may be simply an empty string) here.
 
 \fBCaution\fR - choosing not to include the firmware or kernel modules may cause
 boot issues on some systems.
+.br
+.TP
+.BR CREATEEFIBOOT
+When set to \fB0\fR the \fBbuildkernel\fR script will \fInot\fR
+create or modify EFI boot
+settings in NVRAM (if left unset, a value of \fB1\fR will be assumed).
+Set to \fB0\fR only if you have your own EFI bootloader,
+or want to insert appropriate EFI boot settings manually.
+
+Most users will not need to override the default.
 .br
 .TP
 .BR KEYMAP
@@ -150,12 +162,19 @@ If left commented out, a value of \fB"systemd"\fR will be assumed.
 Most users will not need to override the default.
 .br
 .TP
-.BR CREATEEFIBOOT
-When set to \fB0\fR the \fBbuildkernel\fR script will \fInot\fR
-create or modify EFI boot
-settings in NVRAM (if left unset, a value of \fB1\fR will be assumed).
-Set to \fB0\fR only if you have your own EFI bootloader,
-or want to insert appropriate EFI boot settings manually.
+.BR GPTMODE
+By default, \fBbuildkernel\fR(8) will assume that all UUID variables in
+\fI/etc/buildkernel.conf\fR refer to GPT partitions, and, as such, may be
+found under \fI/dev/disk/by-partuuid/<...>\fR. If this is \fInot\fR the case
+(for example, if you have your \fBLUKS\fR
+filesystem on an MBR partition, or if you have luksFormat-ed
+a top-level drive, rather than a partition within it), then you can switch to
+using \fI/dev/disk/by-uuid/<...>\fR naming, by uncommenting this variable,
+and setting it to \fB"permissive"\fR (the capitalization is unimportant).
+
+\fBCaution!\fR This is an experimental feature.
+
+If left commented out, a value of \fB"onlygpt"\fR will be assumed.
 
 Most users will not need to override the default.
 .RE

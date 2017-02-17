@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.20"
+VERSION="1.0.21"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -49,7 +49,7 @@ EFIBOOTDIR="${DEFAULTEFIBOOTDIR}"
 FULLEFIBOOTDIR="${EFIROOTDIR}${EFIBOOTDIR}"
 EFICONFIGFILE="config"
 OLDSUFFIX=".old"
-PARTUUIDDEVDIR="/dev/disk/by-partuuid"
+PARTUUIDDEVDIR=""
 DISKIDDEVDIR="/dev/disk/by-id"
 IDDEVDIR="/dev/disk/by-id"
 DEFAULTLUKSKEYFILE="luks-key.gpg"
@@ -114,6 +114,10 @@ PLYMOUTHTHEME="${DEFAULTPLYMOUTHTHEME}"
 # also support OpenRC
 DEFAULTINITSYSTEM="systemd"
 INITSYSTEM="${DEFAULTINITSYSTEM}"
+# default GPT mode is to support only partitions on GPT disks, but
+# we also now add a 'permissive' mode, which will accept MBR partitions too
+DEFAULTGPTMODE="onlygpt"
+GPTMODE="${DEFAULTGPTMODE}"
 # following variable is conformed on installation by ebuild
 # (to reflect setting of "plymouth" USE flag)
 USE_PLYMOUTH=true
@@ -149,11 +153,15 @@ declare -i CONFIGDIRTY=0
 declare -i CRYPTPATHMAPFORCED=0
 # archived prior versions of key config variables
 PROCVARS=("EFIPARTUUID" "CRYPTPARTUUID" "KEYFILEPARTUUID" "LUKSKEYFILE" \
-    "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP" "INITSYSTEM")
+    "EFIBOOTDIR" "EFIBOOTFILE" "PLYMOUTHTHEME" "KEYMAP" "INITSYSTEM" \
+    "GPTMODE")
 NEXTVAR=""
 for NEXTVAR in "${PROCVARS[@]}"; do
     declare "OLD_${NEXTVAR}"=""
 done
+# following variables hold UUIDs
+UUIDVARS=("EFIPARTUUID" "CRYPTPARTUUID" "KEYFILEPARTUUID" \
+    "OLD_EFIPARTUUID" "OLD_CRYPTPARTUUID" "OLD_KEYFILEPARTUUID")
 
 # running under EFI?
 declare -i USINGEFI=0
@@ -273,6 +281,16 @@ extract_kernel_release_name() {
     INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/")"
     VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/")"
 }
+select_partition_indexing_guid_type() {
+    # if using GPT, then we can index by-partuuid, otherwise, this is not
+    # available, and we use by-uuid instead
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        PARTUUIDDEVDIR="/dev/disk/by-partuuid"
+    else
+        # fall back to using the more conservative UUID-based naming
+        PARTUUIDDEVDIR="/dev/disk/by-uuid"
+    fi
+}
 check_gcc_config_and_reset_if_necessary() {
     # check if gcc-config exists with an error - if it does, then
     # attempt to set one based on the current gcc version number
@@ -347,7 +365,11 @@ check_is_luks_volume() {
     cryptsetup isLuks "${1}" || die "Path '${1}' is not a LUKS volume"
 }
 partuuid_is_on_usb_device() {
-    local CANONPART="$(readlink --canonicalize "${PARTUUIDDEVDIR}/${1,,}")"
+    local UUID="${1}"
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        UUID="${UUID,,}"
+    fi
+    local CANONPART="$(readlink --canonicalize "${PARTUUIDDEVDIR}/${UUID}")"
     if [[ "${ISUSBPART[${CANONPART}]-0}" == "1" ]]; then
         return 0
     fi
@@ -357,6 +379,49 @@ check_partuuid_exists() {
     if [ ! -h "${PARTUUIDDEVDIR}/${1}" ]; then
         die "Partition with UUID '${1}' does not exist"
     fi
+}
+remap_partition_guids_if_necessary() {
+    # check that the user hasn't specified partition GUIDs when disk GUIDs
+    # were meant, or vice versa (this function can also be used to restore
+    # sanity after switching GPTMODE)
+    local NEXTVAR
+    local NEWUUID="" CANONPART=""
+    for NEXTVAR in "${UUIDVARS[@]}"; do
+        if [[ -v "${NEXTVAR}" ]] ; then
+            if [[ "${GPTMODE}" == "onlygpt" ]]; then
+                if [[ ! -h "/dev/disk/by-partuuid/${!NEXTVAR}" && -h "/dev/disk/by-uuid/${!NEXTVAR}" ]]; then
+                    # not all by-uuid disks have by-partuuid entries; it is
+                    # possible we can't auto-resolve this, but try anyhow
+                    CANONPART="$(readlink --canonicalize "/dev/disk/by-uuid/${!NEXTVAR}")"
+                    NEWUUID="$(lsblk "${CANONPART}" --noheadings --nodeps --output PARTUUID 2>/dev/null)"
+                    if [[ "${NEWUUID}" ]]; then
+                        if [[ "${NEXTVAR}" != OLD_* ]]; then
+                            warning "Migrating ${NEXTVAR} ${!NEXTVAR} (by-uuid) -> ${NEWUUID} (by-partuuid)"
+                        fi
+                        eval "${NEXTVAR}"="${NEWUUID}"
+                        CONFIGDIRTY=1
+                    elif [[ "${NEXTVAR}" != OLD_* ]]; then
+                        warning "Cannot migrate ${NEXTVAR} ${!NEXTVAR} (by-uuid) -> by-partuuid"
+                        warning "Please fix this up manually!"
+                    fi
+                fi
+            else # GPTMODE=="permissive"
+                if [[ ! -h "/dev/disk/by-uuid/${!NEXTVAR}" && -h "/dev/disk/by-partuuid/${!NEXTVAR}" ]]; then
+                    # all by-partuuid disks have by-uuid entires; we can
+                    # auto-resolve this
+                    # canonicalize the valid by-partuuid reference, and then
+                    # look this up by uuid
+                    CANONPART="$(readlink --canonicalize "/dev/disk/by-partuuid/${!NEXTVAR}")"
+                    NEWUUID="$(lsblk "${CANONPART}" --noheadings --nodeps --output UUID)"
+                    if [[ "${NEXTVAR}" != OLD_* ]]; then
+                        warning "Migrating ${NEXTVAR} ${!NEXTVAR} (by-partuuid) -> ${NEWUUID} (by-uuid)"
+                    fi
+                    eval "${NEXTVAR}"="${NEWUUID}"
+                    CONFIGDIRTY=1
+                fi
+            fi
+        fi
+    done
 }
 source_etc_conf_file() {
     # get the variables the user must set, and any overrides
@@ -370,15 +435,27 @@ source_etc_conf_file() {
         fi
     fi
     source "${CONFFILE}"
+    # we now know the correct GPTMODE, so select by-partuuid or by-uuid
+    # partition indexing...
+    # map GPTMODE to lower case
+    if [[ -v GPTMODE ]]; then
+        GPTMODE="${GPTMODE,,}"
+    fi
+    select_partition_indexing_guid_type
+    # make sure these are not the wrong type (e.g. by-partuuid GUIDS where
+    # by-uuid is wanted, or vice-versa, do this before case-casting)
+    remap_partition_guids_if_necessary
     # make sure the PARTUUIDs are lower case, if defined
-    if [[ -v EFIPARTUUID ]]; then
-        EFIPARTUUID="${EFIPARTUUID,,}"
-    fi
-    if [[ -v CRYPTPARTUUID ]]; then
-        CRYPTPARTUUID="${CRYPTPARTUUID,,}"
-    fi
-    if [[ -v KEYFILEPARTUUID ]]; then
-        KEYFILEPARTUUID="${KEYFILEPARTUUID,,}"
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        if [[ -v EFIPARTUUID ]]; then
+            EFIPARTUUID="${EFIPARTUUID,,}"
+        fi
+        if [[ -v CRYPTPARTUUID ]]; then
+            CRYPTPARTUUID="${CRYPTPARTUUID,,}"
+        fi
+        if [[ -v KEYFILEPARTUUID ]]; then
+            KEYFILEPARTUUID="${KEYFILEPARTUUID,,}"
+        fi
     fi
     # remember if CRYPTPATHMAP set
     if [[ -v CRYPTPATHMAP ]]; then
@@ -497,7 +574,9 @@ find_all_gpg_keyfile_partitions() {
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
         if [ -e "${NEXTPART}" ]; then
             if ! cryptsetup isLuks "${NEXTPART}"; then
-                NEXTPART="${NEXTPART,,}"
+                if [[ "${GPTMODE}" == "onlygpt" ]]; then
+                    NEXTPART="${NEXTPART,,}"
+                fi
                 local NEXTUUID="${NEXTPART##*/}"
                 local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
                 local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
@@ -522,7 +601,9 @@ find_all_luks_partitions() {
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
         if [ -e "${NEXTPART}" ]; then
             if cryptsetup isLuks "${NEXTPART}"; then
-                NEXTPART="${NEXTPART,,}"
+                if [[ "${GPTMODE}" == "onlygpt" ]]; then
+                    NEXTPART="${NEXTPART,,}"
+                fi
                 local NEXTUUID="${NEXTPART##*/}"
                 local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
                 local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
@@ -550,7 +631,9 @@ find_all_efi_system_partitions() {
     local NEXTPART
     for NEXTPART in "${PARTUUIDDEVDIR}"/*; do
         if [ -e "${NEXTPART}" ]; then
-            NEXTPART="${NEXTPART,,}"
+            if [[ "${GPTMODE}" == "onlygpt" ]]; then
+                NEXTPART="${NEXTPART,,}"
+            fi
             local NEXTUUID="${NEXTPART##*/}"
             local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
             local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
@@ -559,13 +642,26 @@ find_all_efi_system_partitions() {
             if partuuid_is_on_usb_device "${NEXTUUID}"; then
                 NEXTONUSB="1"
             fi
-            if grep -qi 'EFI System' <(sgdisk --info "${NEXTPARTNUM}" "${NEXTDEVNAME}"); then
-                # assign results (Bash treats arrays as unset if not assigned a value)
-                EFIUUIDS=("${EFIUUIDS[@]:+${EFIUUIDS[@]}}" "${NEXTUUID}")
-                EFIPARTNAMES=("${EFIPARTNAMES[@]:+${EFIPARTNAMES[@]}}" "${NEXTPARTNAME}")
-                EFIDEVNAMES=("${EFIDEVNAMES[@]:+${EFIDEVNAMES[@]}}" "${NEXTDEVNAME}")
-                EFIPARTNUMS=("${EFIPARTNUMS[@]:+${EFIPARTNUMS[@]}}" "${NEXTPARTNUM}")
-                EFIONUSBS=("${EFIONUSBS[@]:+${EFIONUSBS[@]}}" "${NEXTONUSB}")
+            declare -i RC
+            # trap errors manually here
+            set +e
+            if [[ "${GPTMODE}" == "onlygpt" ]]; then
+                grep -qi 'EFI System' <(sgdisk --info "${NEXTPARTNUM}" "${NEXTDEVNAME}" 2>/dev/null)
+                RC="${?}"
+            else
+                # we have to be more permissive when looking on non-GPT disks
+                # treat any vfat partition as a candidate
+                grep -qi 'TYPE="vfat"' <(blkid "${NEXTPARTNAME}" 2>/dev/null)
+                RC="${?}"
+            fi
+            set -e
+            if ((RC==0)); then
+                    # assign results (Bash treats arrays as unset if not assigned a value)
+                    EFIUUIDS=("${EFIUUIDS[@]:+${EFIUUIDS[@]}}" "${NEXTUUID}")
+                    EFIPARTNAMES=("${EFIPARTNAMES[@]:+${EFIPARTNAMES[@]}}" "${NEXTPARTNAME}")
+                    EFIDEVNAMES=("${EFIDEVNAMES[@]:+${EFIDEVNAMES[@]}}" "${NEXTDEVNAME}")
+                    EFIPARTNUMS=("${EFIPARTNUMS[@]:+${EFIPARTNUMS[@]}}" "${NEXTPARTNUM}")
+                    EFIONUSBS=("${EFIONUSBS[@]:+${EFIONUSBS[@]}}" "${NEXTONUSB}")
             fi
         fi
     done
@@ -604,10 +700,19 @@ find_all_efi_boot_entries() {
         local NEXTPATH=$(egrep -o 'File\([^(]*\)' <<<"${NEXTLINE}")
         NEXTPATH="${NEXTPATH:5:-1}"
         local NEXTNAME="$(efibootmgr | grep "^${NEXTSIG}" | cut -c11-)"
-        NEXTUUID="${NEXTUUID,,}"
         if [[ -z "${NEXTID}" || -z "${NEXTNAME}" || -z "${NEXTPATH}" || -z "${NEXTUUID}" || -z "${NEXTISACTIVE}" ]]; then
             # one of the required strings is empty, we cannot use this line
             continue
+        fi
+        if [[ "${GPTMODE}" == "onlygpt" ]]; then
+            NEXTUUID="${NEXTUUID,,}"
+        else
+            # permissive mode in use, but EFI may still be using
+            # by-partuuid naming, so check for this and autocorrect if so
+            if [[ ! -h "/dev/disk/by-uuid/${NEXTUUID}" && -h "/dev/disk/by-partuuid/${NEXTUUID}" ]]; then
+                local CANONPART="$(readlink --canonicalize "/dev/disk/by-partuuid/${NEXTUUID}")"
+                NEXTUUID="$(lsblk "${CANONPART}" --noheadings --nodeps --output UUID)"
+            fi
         fi
         # assign results (Bash treats arrays as unset if not assigned a value)
         EBOOTIDS=("${EBOOTIDS[@]:+${EBOOTIDS[@]}}" "${NEXTID}")
@@ -661,17 +766,20 @@ warn_if_buildkernel_config_incomplete() {
         warning "${PROGNAME} cannot create a kernel until you fix this"
     fi
 }
-interactively_set_buildkernel_config() {
+prepare_data_for_interactive_menu_session() {
     find_all_gpg_keyfile_partitions
     find_all_luks_partitions
     find_all_efi_system_partitions
     find_all_efi_boot_entries
+}
+interactively_set_buildkernel_config() {
+    prepare_data_for_interactive_menu_session
     archive_current_config_variables
     declare -i DOSAVE=0 DOEXIT=0
     declare -a TOPMENU=("Set EFI system partition" "Set LUKS root partition" \
         "Set LUKS key options" "Set EFI boot file path"\
         "Set boot splash options" "Set boot-time keymap" \
-        "Set init system" \
+        "Set init system" "Set GPT mode" \
         "Exit without saving" "Save and exit")
     local X
     PS3="Your choice: "
@@ -688,6 +796,7 @@ interactively_set_buildkernel_config() {
                 "Set boot splash options") set_boot_splash_options; break ;;
                 "Set boot-time keymap") set_boot_time_keymap; break ;;
                 "Set init system") set_init_system; break ;;
+                "Set GPT mode") set_gpt_mode; break ;;
                 "Exit without saving") DOEXIT=1; break ;;
                 "Save and exit") DOSAVE=1; DOEXIT=1; break ;;
                 *) warning "Please choose one of the menu options!"; break ;;
@@ -749,8 +858,12 @@ save_buildkernel_config() {
             ( "${ACTUAL_KEYFILEPARTUUID}" != "${OLD_ACTUAL_KEYFILEPARTUUID}" || \
               "${LUKSKEYFILE}" != "${OLD_LUKSKEYFILE}" ) ]]; then
             show "Your LUKS keyfile location has changed:"
-            show "Old PARTUUID: ${OLD_ACTUAL_KEYFILEPARTUUID}, filename: '${OLD_LUKSKEYFILE}'"
-            show "New PARTUUID: ${ACTUAL_KEYFILEPARTUUID}, filename: '${LUKSKEYFILE}'"
+            local UUIDTYPE="PARTUUID"
+            if [[ "${GPTMODE}" == "permissive" ]]; then
+                UUIDTYPE="UUID"
+            fi
+            show "Old ${UUIDTYPE}: ${OLD_ACTUAL_KEYFILEPARTUUID}, filename: '${OLD_LUKSKEYFILE}'"
+            show "New ${UUIDTYPE}: ${ACTUAL_KEYFILEPARTUUID}, filename: '${LUKSKEYFILE}'"
             if test_yn_need_enter "Would you like to copy the keyfile across now"; then
                 copy_file_from_partition_to_partition \
                     "${OLD_ACTUAL_KEYFILEPARTUUID}" "/${OLD_LUKSKEYFILE}" \
@@ -840,7 +953,8 @@ set_luks_root_partition() {
 }
 show_current_key_config_status() {
     # main things we need are: EFIPARTUUID, CRYPTPARTUUID, KEYFILEPARTUUID
-    # LUKSKEYFILE, EFIBOOTDIR, EFIBOOTFILE, PLYMOUTHTHEME, KEYMAP and INITSYSTEM
+    # LUKSKEYFILE, EFIBOOTDIR, EFIBOOTFILE, PLYMOUTHTHEME, KEYMAP, INITSYSTEM
+    # and GPTMODE
     local MODFLAG=""
     if ((CONFIGDIRTY==1)); then
         MODFLAG=" - MODIFIED"
@@ -866,15 +980,26 @@ show_current_key_config_status() {
     else
         printf "  Init system:                %-36s\n" "OpenRC"
     fi
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        printf "  GPT mode:                   %-36s\n" "Only GPT partitions"
+        printf "  UUIDs looked up in:         %-36s\n" "/dev/disk/by-partuuid"
+    else
+        printf "  GPT mode:                   %-36s\n" "Permissive (GPT/MBR) (experimental!)"
+        printf "  UUIDs looked up in:         %-36s\n" "/dev/disk/by-uuid"
+    fi
     printf "\n"
 }
 show_gpg_keyfile_partitions() {
     local LASTITEM=${1:-""}
+    local UUIDHEADER="Partition UUID"
     declare -i I=0 NUMGPGPARTS="${#GPGUUIDS[@]}"
+    if [[ "${GPTMODE}" == "permissive" ]]; then
+        UUIDHEADER="Partition / Disk UUID"
+    fi
     if ((NUMGPGPARTS==0)); then
         show "No potential keyfile partitions found on your machine"
     else
-        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "Partition UUID" "Path" "Use"
+        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "${UUIDHEADER}" "Path" "Use"
         printf "%s\n" "--- ------------------------------------ ---------- ---"
         for I in "${!GPGUUIDS[@]}"; do
             local INUSE="[ ]"
@@ -891,11 +1016,15 @@ show_gpg_keyfile_partitions() {
 }
 show_luks_partitions() {
     local LASTITEM=${1:-""}
+    local UUIDHEADER="Partition UUID"
     declare -i I=0 NUMLUKSPARTS="${#LUKSUUIDS[@]}"
+    if [[ "${GPTMODE}" == "permissive" ]]; then
+        UUIDHEADER="Partition / Disk UUID"
+    fi
     if ((NUMLUKSPARTS==0)); then
         die "No LUKS partitions found on your machine"
     else
-        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "Partition UUID" "Path" "USB" "Use"
+        printf "%3s %-36s %-10s %-3s %3s\n" "Num" "${UUIDHEADER}" "Path" "USB" "Use"
         printf "%s\n" "--- ------------------------------------ ---------- --- ---"
         for I in "${!LUKSUUIDS[@]}"; do
             local ISUSB=" N "
@@ -916,11 +1045,15 @@ show_luks_partitions() {
 }
 show_efi_system_partitions() {
     local LASTITEM=${1:-""}
+    local UUIDHEADER="Partition UUID"
     declare -i I=0 NUMEFIPARTS="${#EFIUUIDS[@]}"
+    if [[ "${GPTMODE}" == "permissive" ]]; then
+        UUIDHEADER="Partition / Disk UUID"
+    fi
     if ((NUMEFIPARTS==0)); then
         die "No EFI system partitions found on your machine"
     else
-        printf "%3s %-36s %-10s %-3s %-3s %3s\n" "Num" "Partition UUID" "Path" "USB" "Win" "Use"
+        printf "%3s %-36s %-10s %-3s %-3s %3s\n" "Num" "${UUIDHEADER}" "Path" "USB" "Win" "Use"
         printf "%s\n" "--- ------------------------------------ ---------- --- --- ---"
         for I in "${!EFIUUIDS[@]}"; do
             local ISUSB=" N "
@@ -979,6 +1112,13 @@ show_init_system_status() {
         show "Targeting systemd init"
     else
         show "Targeting OpenRC init"
+    fi
+}
+show_gpt_mode_status() {
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        show "Using only GPT partitions"
+    else
+        show "Permissive (GPT and MBR partitions / disks) (experimental!)"
     fi
 }
 set_luks_key_options() {
@@ -1187,16 +1327,16 @@ set_boot_splash_options() {
     done
 }
 set_init_system() {
-    # currently only two option are supported
+    # currently only two options are supported
     local -i DOEXIT=0
-    declare -a INITSYSTEMSPLASHMENU=("systemd (select if unsure)" \
+    declare -a INITSYSTEMMENU=("systemd (select if unsure)" \
         "OpenRC" "GO BACK")
     local X
     until ((DOEXIT==1)); do
         show "Current init system settings:"
         show_init_system_status
         show "Please choose your desired init system setting (or GO BACK):"
-        select X in "${INITSYSTEMSPLASHMENU[@]}"; do
+        select X in "${INITSYSTEMMENU[@]}"; do
             case "${X}" in
                 "systemd (select if unsure)")
                     if [[ "${INITSYSTEM}" != "systemd" ]]; then
@@ -1214,6 +1354,48 @@ set_init_system() {
                     INITSYSTEM="openrc"
                     show "New init system settings:"
                     show_init_system_status
+                    DOEXIT=1
+                    break ;;
+                "GO BACK") DOEXIT=1; break ;;
+                *) warning "Please choose one of the menu options!"; break ;;
+            esac
+        done
+    done
+}
+set_gpt_mode() {
+# currently only two options are supported
+    local -i DOEXIT=0
+    declare -a GPTMODEMENU=("Only GPT (select if unsure)" \
+        "Permissive (GPT/MBR; warning - experimental!)" "GO BACK")
+    local X
+    until ((DOEXIT==1)); do
+        show "Current GPT mode settings:"
+        show_gpt_mode_status
+        show "Please choose your desired GPT mode setting (or GO BACK):"
+        select X in "${GPTMODEMENU[@]}"; do
+            case "${X}" in
+                "Only GPT (select if unsure)")
+                    if [[ "${GPTMODE}" != "onlygpt" ]]; then
+                        CONFIGDIRTY=1
+                        GPTMODE="onlygpt"
+                        select_partition_indexing_guid_type
+                        remap_partition_guids_if_necessary
+                        prepare_data_for_interactive_menu_session
+                    fi
+                    show "New GPT mode settings:"
+                    show_gpt_mode_status
+                    DOEXIT=1
+                    break ;;
+                "Permissive (GPT/MBR; warning - experimental!)")
+                    if [[ "${GPTMODE}" != "permissive" ]]; then
+                        CONFIGDIRTY=1
+                        GPTMODE="permissive"
+                        select_partition_indexing_guid_type
+                        remap_partition_guids_if_necessary
+                        prepare_data_for_interactive_menu_session
+                    fi
+                    show "New GPT mode settings:"
+                    show_gpt_mode_status
                     DOEXIT=1
                     break ;;
                 "GO BACK") DOEXIT=1; break ;;
@@ -1288,9 +1470,15 @@ copy_file_from_partition_to_partition() {
     # prints a warning only if not successful (you can specify text of this)
     # if mounted on entry, a partition will remain so on exit
     # if unmounted on entry, the partition will be unmounted again on exit
-    local FROMPARTUUID="${1,,}"
+    local FROMPARTUUID="${1}"
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        FROMPARTUUID="${FROMPARTUUID,,}"
+    fi
     local FROMPATH="${2}" # path relative to mountpoint, starting with /
-    local TOPARTUUID="${3,,}"
+    local TOPARTUUID="${3}"
+    if [[ "${GPTMODE}" == "onlygpt" ]]; then
+        TOPARTUUID="${TOPARTUUID,,}"
+    fi
     local TOPATH="${4}" # path relative to mountpoint, starting with /
     local ONSUCCESSTEXT="${5}"
     local ONERRORTEXT="${6}"
@@ -1492,8 +1680,13 @@ ensure_efi_partition_mounted() {
         # things happening in the case where the user leaves an old partition 
         # mounted, changes the EFIPARTUUID in /etc/buildkernel.conf, then runs
         # buildkernel)
-        local MOUNTEDPARTUUID="$(lsblk --noheadings --list --output="MOUNTPOINT,PARTUUID" | grep "^${EFIROOTDIR}[[:space:]]" | awk '{print $2;}')"
-        MOUNTEDPARTUUID="${MOUNTEDPARTUUID,,}"
+        local MOUNTEDPARTUUID
+        if [[ "${GPTMODE}" == "onlygpt" ]]; then
+            MOUNTEDPARTUUID="$(lsblk --noheadings --list --output="MOUNTPOINT,PARTUUID" | grep "^${EFIROOTDIR}[[:space:]]" | awk '{print $2;}')"
+            MOUNTEDPARTUUID="${MOUNTEDPARTUUID,,}"
+        else
+            MOUNTEDPARTUUID="$(lsblk --noheadings --list --output="MOUNTPOINT,UUID" | grep "^${EFIROOTDIR}[[:space:]]" | awk '{print $2;}')"
+        fi
         if [[ "${MOUNTEDPARTUUID}" == "${EFIPARTUUID}" ]]; then
             # remember original mount status, so we can maintain it later if needed
             MOUNTEDONENTRY=1
