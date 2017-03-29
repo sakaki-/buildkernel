@@ -1640,7 +1640,7 @@ set_kernel_config() {
     local TGT="CONFIG_${1}"
     local REP="${2//\//\\/}"
     if grep -q "^${TGT}[^_]" .config; then
-        sed -ir "s/^\(${TGT}=.*\|# ${TGT} is not set\)/${TGT}=${REP}/" .config
+        sed -i "s/^\(${TGT}=.*\|# ${TGT} is not set\)/${TGT}=${REP}/" .config
     else
         echo "${TGT}=${2}" >> .config
     fi
@@ -1655,7 +1655,7 @@ set_kernel_config_list_to_y() {
 unset_kernel_config() {
     # unsets flag with the value of $1, config must exist at "./.config"
     local TGT="CONFIG_${1}"
-    sed -ir "s/^${TGT}=.*/# ${TGT} is not set/" .config
+    sed -i "s/^${TGT}=.*/# ${TGT} is not set/" .config
 }
 clean_kernel_tree_if_desired() {
     declare -i DOCLEAN="${ARG_CLEAN}"
