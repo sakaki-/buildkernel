@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.21"
+VERSION="1.0.22"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -1541,17 +1541,19 @@ copy_config_from_proc_if_necessary () {
         # requires that the kernel has support for config in /proc
         check_file_exists "${CURRENTCONFIG}"
         zcat "${CURRENTCONFIG}" > "${TARGETCONFIG}"
-        if ((ARG_ASK==1)); then
-            show "Updating old config using make ${CONFIGUPDATETYPE}"
-            if [ "${CONFIGUPDATETYPE}" != "${SILENTUPDATETYPE}" ]; then
-                show "Please answer all questions as and if prompted..."
-            fi
-            make "${CONFIGUPDATETYPE}"
-        else
-            # non-interactive mode, so we have to go silent
-            show "Updating old config using make ${SILENTUPDATETYPE}"
-            make "${SILENTUPDATETYPE}"
+    fi
+}
+update_config_if_necessary() {
+    if ((ARG_ASK==1)); then
+        show "Updating old config using make ${CONFIGUPDATETYPE}"
+        if [ "${CONFIGUPDATETYPE}" != "${SILENTUPDATETYPE}" ]; then
+            show "Please answer all questions as and if prompted..."
         fi
+        make "${CONFIGUPDATETYPE}"
+    else
+        # non-interactive mode, so we have to go silent
+        show "Updating old config using make ${SILENTUPDATETYPE}"
+        make "${SILENTUPDATETYPE}"
     fi
 }
 conform_config_file() {
@@ -2118,6 +2120,7 @@ process_command_line_options() {
 
 # *************** start of script proper ***************
 suppress_colour_and_alert_if_output_not_to_a_terminal
+copy_config_from_proc_if_necessary
 extract_kernel_release_name
 check_if_booted_under_efi
 find_all_usb_partitions
@@ -2129,7 +2132,7 @@ check_gcc_config_and_reset_if_necessary
 if_option_unset "ARG_STAGEONLY" ensure_efi_partition_mounted
 if ((ARG_COPYFROMSTAGING==0)); then    
     enter_build_directory
-    copy_config_from_proc_if_necessary
+    update_config_if_necessary
     conform_config_file
     allow_user_to_modify_config_graphically
     if_option_set "ARG_ASK" continue_yn "Now build a kernel with this new configuration"
