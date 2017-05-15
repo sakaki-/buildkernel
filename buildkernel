@@ -525,8 +525,14 @@ find_all_luks_partitions() {
                 NEXTPART="${NEXTPART,,}"
                 local NEXTUUID="${NEXTPART##*/}"
                 local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
-                local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
-                local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+                # nvme devices have paths of form e.g. /dev/nvme0n1p1
+                # standard drives have form e.g. /dev/sda3
+                if [[ ${NEXTPARTNAME} =~ ^/dev/nvme.*$ ]]; then
+                    local NEXTDEVNAME="${NEXTPARTNAME%%p[[:digit:]]*}"        # e.g. /dev/nvme0n1
+                else
+                    local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"         # e.g. /dev/sda
+                fi
+                local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"            # e.g. 3
                 local NEXTONUSB="0"
                 if partuuid_is_on_usb_device "${NEXTUUID}"; then
                     NEXTONUSB="1"
@@ -553,8 +559,14 @@ find_all_efi_system_partitions() {
             NEXTPART="${NEXTPART,,}"
             local NEXTUUID="${NEXTPART##*/}"
             local NEXTPARTNAME="$(readlink --canonicalize "${NEXTPART}")" # e.g. /dev/sda3
-            local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"              # e.g. /dev/sda
-            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"              # e.g. 3
+            # nvme devices have paths of form e.g. /dev/nvme0n1p1
+            # standard drives have form e.g. /dev/sda3
+            if [[ ${NEXTPARTNAME} =~ ^/dev/nvme.*$ ]]; then
+                local NEXTDEVNAME="${NEXTPARTNAME%%p[[:digit:]]*}"        # e.g. /dev/nvme0n1
+            else
+                local NEXTDEVNAME="${NEXTPARTNAME%%[[:digit:]]*}"         # e.g. /dev/sda
+            fi
+            local NEXTPARTNUM="${NEXTPARTNAME##*[^[:digit:]]}"            # e.g. 3
             local NEXTONUSB="0"
             if partuuid_is_on_usb_device "${NEXTUUID}"; then
                 NEXTONUSB="1"
