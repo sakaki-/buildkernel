@@ -1548,7 +1548,7 @@ enter_build_directory() {
             rm -r ${LINUXBUILDDIR}
         fi
         show "Proceeding - copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
-        cp -LR ${LINUXDIR} ${LINUXBUILDDIR}
+        cp -ax ${LINUXDIR}/ ${LINUXBUILDDIR}
     fi
 
     show "Proceeding - entering ${LINUXBUILDDIR}..."
