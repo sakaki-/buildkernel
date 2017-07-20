@@ -83,6 +83,17 @@ one up) and no keyfile, set this to the empty string (in which case,
 unset.
 .br
 .TP
+.BR LINUXBUILDDIR
+By default, genkernel will build the kernel in /usr/src/linux. If
+\fBLINUXBUILDDIR\fR is specified, genkernel will delete the contents of
+\fBLINUXBUILDDIR\fR and copy the contents of \fI/usr/src/linux\fR to the
+specified directory and build the kernel there. This can be useful for sparing
+write cycles if \fI/usr/src/linux\fR is located on a SSD and the specified
+directory lies e.g. on tmpfs.
+
+You may consider setting \fBLINUXBUILDDIR\fR="\fI/var/tmp/buildkernel\fR".
+.br
+.TP
 .BR ADDITIONALKERNELCMDS
 If you wish to pass any additional command line parameters in the kernel boot
 line (either for attention of the kernel itself, or for \fBgenkernel\fR(8)'s

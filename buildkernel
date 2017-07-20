@@ -1540,8 +1540,19 @@ ensure_efi_partition_mounted() {
     check_key_file_if_on_efi_system_partition
 }
 enter_build_directory() {
-    show "Proceeding - entering ${LINUXDIR}..."
-    cd "${LINUXDIR}"
+    if [ -z ${LINUXBUILDDIR+x} ]; then
+        LINUXBUILDDIR=$LINUXDIR
+    else
+        if [ -d "$LINUXBUILDDIR" ]; then
+            show "Proceeding - Cleaning ${LINUXBUILDDIR}..."
+            rm -r ${LINUXBUILDDIR}
+        fi
+        show "Proceeding - copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
+        cp -ax ${LINUXDIR}/ ${LINUXBUILDDIR}
+    fi
+
+    show "Proceeding - entering ${LINUXBUILDDIR}..."
+    cd "${LINUXBUILDDIR}"
 }
 copy_config_from_proc_if_necessary () {
     if [ ! -s "${TARGETCONFIG}" ]; then
