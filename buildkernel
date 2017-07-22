@@ -41,7 +41,7 @@ INITRAMFSNAME=""
 VMLINUZNAME=""
 CURRENTVERSION="linux-$(uname -r)"
 CURRENTCONFIG="/proc/config.gz"
-TARGETCONFIG="${LINUXDIR}/.config"
+TARGETCONFIG=""
 BOOTDIR="/boot"
 EFIROOTDIR="${BOOTDIR}/efi"
 DEFAULTEFIBOOTDIR="/EFI/Boot"
@@ -269,7 +269,8 @@ extract_kernel_release_name() {
     # the kernelrelease may change during the build (e.g., by a 'clean'
     # tagged release directory becoming marked 'dirty', and so having a '+'
     # sign appended)
-    NEWVERSION="linux-$(cd "${LINUXDIR}" && make -s kernelrelease)"
+    # LINUXBUILDDIR must be defined and non-blank on entry
+    NEWVERSION="linux-$(cd "${LINUXBUILDDIR}" && make -s kernelrelease)"
     INITRAMFSNAME="$(echo $NEWVERSION | sed "s/linux/initramfs-genkernel-x86_64/")"
     VMLINUZNAME="$(echo $NEWVERSION | sed "s/linux/vmlinuz/")"
 }
@@ -1539,22 +1540,29 @@ ensure_efi_partition_mounted() {
     fi
     check_key_file_if_on_efi_system_partition
 }
-enter_build_directory() {
-    if [ -z ${LINUXBUILDDIR+x} ]; then
-        LINUXBUILDDIR=$LINUXDIR
+setup_build_directory() {
+    if [ -z "${LINUXBUILDDIR+x}" ]; then
+        LINUXBUILDDIR="${LINUXDIR}"
     else
-        if [ -d "$LINUXBUILDDIR" ]; then
-            show "Proceeding - Cleaning ${LINUXBUILDDIR}..."
-            rm -r ${LINUXBUILDDIR}
+        LINUXBUILDDIR="${LINUXBUILDDIR%/}/${PROGNAME}"
+        if [ -d "${LINUXBUILDDIR}" ]; then
+            show "Cleaning ${LINUXBUILDDIR}..."
+            rm -r "${LINUXBUILDDIR}"
         fi
-        show "Proceeding - copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
-        cp -ax ${LINUXDIR}/ ${LINUXBUILDDIR}
-    fi
+        # ensure parent directory exists...
+        mkdir -p "${LINUXBUILDDIR%/*}"
 
+        show "Copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
+        cp -ax "${LINUXDIR}"/ "${LINUXBUILDDIR}"
+    fi
+}
+enter_build_directory() {
     show "Proceeding - entering ${LINUXBUILDDIR}..."
     cd "${LINUXBUILDDIR}"
 }
 copy_config_from_proc_if_necessary () {
+    # LINUXBUILDDIR must be defined and non blank on entry
+    TARGETCONFIG="${LINUXBUILDDIR}/.config"
     if [ ! -s "${TARGETCONFIG}" ]; then
         if ((ARG_ASK==1)); then
             continue_yn "There is no .config file; use current (${CURRENTVERSION}) config"
@@ -1567,16 +1575,17 @@ copy_config_from_proc_if_necessary () {
     fi
 }
 update_config_if_necessary() {
+    # LINUXBUILDDIR must be defined and non blank on entry
     if ((ARG_ASK==1)); then
         show "Updating old config using make ${CONFIGUPDATETYPE}"
         if [ "${CONFIGUPDATETYPE}" != "${SILENTUPDATETYPE}" ]; then
             show "Please answer all questions as and if prompted..."
         fi
-        make "${CONFIGUPDATETYPE}"
+        (cd "${LINUXBUILDDIR}" && make "${CONFIGUPDATETYPE}")
     else
         # non-interactive mode, so we have to go silent
         show "Updating old config using make ${SILENTUPDATETYPE}"
-        make "${SILENTUPDATETYPE}"
+        (cd "${LINUXBUILDDIR}" && make "${SILENTUPDATETYPE}")
     fi
 }
 conform_config_file() {
@@ -2062,6 +2071,9 @@ exit_zero_if_new_kernel_available() {
         cleanup_and_exit_with_code 1
     fi
 }
+
+# NB should not invoke any stateful handlers; just set the ARG_... variables
+# deal with 'perform-then-exit' actions, and return
 process_command_line_options() {
     local TEMP
     declare -i RC
@@ -2132,7 +2144,10 @@ process_command_line_options() {
         interactively_set_buildkernel_config
         cleanup_and_exit_with_code 0
     fi
-    setup_final_variables
+}
+
+# tail end handler called once buildkernel.conf sourced, EFIPATHMAP set etc.
+handle_final_options() {
     if ((ARG_SNAPSHOTBACKUP==1)); then
         snapshot_kernel_on_efi_partition
         cleanup_and_exit_with_code 0
@@ -2143,12 +2158,16 @@ process_command_line_options() {
 
 # *************** start of script proper ***************
 suppress_colour_and_alert_if_output_not_to_a_terminal
-copy_config_from_proc_if_necessary
-extract_kernel_release_name
 check_if_booted_under_efi
 find_all_usb_partitions
 source_etc_conf_file
 process_command_line_options "${@}"
+setup_build_directory
+copy_config_from_proc_if_necessary
+update_config_if_necessary
+extract_kernel_release_name
+setup_final_variables
+handle_final_options
 ask_whether_to_proceed
 
 check_gcc_config_and_reset_if_necessary

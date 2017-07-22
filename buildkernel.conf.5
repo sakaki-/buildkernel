@@ -84,14 +84,21 @@ unset.
 .br
 .TP
 .BR LINUXBUILDDIR
-By default, genkernel will build the kernel in /usr/src/linux. If
-\fBLINUXBUILDDIR\fR is specified, genkernel will delete the contents of
-\fBLINUXBUILDDIR\fR and copy the contents of \fI/usr/src/linux\fR to the
-specified directory and build the kernel there. This can be useful for sparing
+By default, \fBbuildkernel\fR(8) will build the kernel in \fI/usr/src/linux\fR.
+If \fBLINUXBUILDDIR\fR is specified however, \fBbuildkernel\fR(8) will instead
+delete the contents of \fBLINUXBUILDDIR\fI/buildkernel\fR, then copy the
+contents of \fI/usr/src/linux\fR there. This can be useful for sparing
 write cycles if \fI/usr/src/linux\fR is located on a SSD and the specified
 directory lies e.g. on tmpfs.
 
-You may consider setting \fBLINUXBUILDDIR\fR="\fI/var/tmp/buildkernel\fR".
+For example, you may consider setting \fBLINUXBUILDDIR\fR="\fI/var/tmp\fR"
+(the kernel will then be built in \fI/var/tmp/buildkernel\fR).
+
+Please note that if the kernel's \fI.config\fR file is modified
+during the build, and you have specified a \fBLINUXBUILDDIR\fR, then it is
+only the \fI.config\fR in the \fBLINUXBUILDDIR\fI/buildkernel\fR directory
+that is affected; the \fI.config\fR in f\I/usr/src/linux\fR (if any) will
+be unchanged.
 .br
 .TP
 .BR ADDITIONALKERNELCMDS
