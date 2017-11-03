@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.25"
+VERSION="1.0.26"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -631,7 +631,8 @@ find_all_efi_boot_entries() {
         # archive whether or not this is a windows bootloader entry
         # there can be >1 entry for the same UUID, so this acts like a
         # 'dirty' flag
-        if grep -i -q "Windows" <<<"${NEXTNAME}"; then
+        if grep -i -q "Windows" <<<"${NEXTNAME}" || \
+	   grep -i -q "Microsoft" <<<"${NEXTPATH}"; then
             HASWINBOOTLOADER["${NEXTUUID}"]="1"
         fi
         # store a lookup from boot ID (4 digit hex string) to index in these
@@ -1546,14 +1547,21 @@ setup_build_directory() {
     else
         LINUXBUILDDIR="${LINUXBUILDDIR%/}/${PROGNAME}"
         if [ -d "${LINUXBUILDDIR}" ]; then
-            show "Cleaning ${LINUXBUILDDIR}..."
-            rm -r "${LINUXBUILDDIR}"
+            if ((ARG_CLEAN==1)); then
+                show "Cleaning ${LINUXBUILDDIR}..."
+                rm -r "${LINUXBUILDDIR}"
+                show "Copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
+                cp -ax "${LINUXDIR}"/ "${LINUXBUILDDIR}"
+            else
+                warning "${LINUXBUILDDIR} exists, using it as-is"
+                warning "Specify the --clean/-c option to override this"
+            fi
+        else
+            # ensure parent directory exists...
+            mkdir -p "${LINUXBUILDDIR%/*}"
+            show "Copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
+            cp -ax "${LINUXDIR}"/ "${LINUXBUILDDIR}"
         fi
-        # ensure parent directory exists...
-        mkdir -p "${LINUXBUILDDIR%/*}"
-
-        show "Copying from ${LINUXDIR} to ${LINUXBUILDDIR}..."
-        cp -ax "${LINUXDIR}"/ "${LINUXBUILDDIR}"
     fi
 }
 enter_build_directory() {
