@@ -157,6 +157,8 @@ done
 
 # running under EFI?
 declare -i USINGEFI=0
+# has support for kernel modules
+declare -i USINGMODULES=1
 
 declare -i MOUNTEDONENTRY=0
 # program arguments (booleans in this case)
@@ -464,6 +466,13 @@ setup_final_variables() {
     fi
     if [ -n "${ADDITIONALKERNELCMDS}" ]; then
         KERNEL_CMD_LINE+=" ${ADDITIONALKERNELCMDS}"
+    fi
+
+    if grep -q "CONFIG_MODULES is not set" "${TARGETCONFIG}" > /dev/null; then
+        show "No module support, disabling kernel modules."
+        USINGMODULES=0
+    else
+        USINGMODULES=1
     fi
 }
 check_if_booted_under_efi() {
@@ -1717,11 +1726,19 @@ kernel_build_pass_1() {
     rm ${VERBOSITYFLAG} -f "${UNCOMPRESSEDINITRAMFS}"
     touch "${UNCOMPRESSEDINITRAMFS}"
     show "Building ${NEWVERSION} (pass 1 - dummy initramfs)..."
-    ${MAKE} modules_prepare
+
+    if ((USINGMODULES==1)); then
+        ${MAKE} modules_prepare
+    fi
+
     ${MAKE} -j ${NUMCPUSPLUSONE}
     ${MAKE} install
-    show "Installing modules..."
-    ${MAKE} modules_install
+
+    if ((USINGMODULES==1)); then
+        show "Installing modules..."
+        ${MAKE} modules_install
+    fi
+
     show "Installing firmware..."
     ${MAKE} firmware_install
 }
@@ -1788,10 +1805,14 @@ modify_initramfs() {
     fi
     show "Copying static gpg program into initramfs..."
     cp ${VERBOSITYFLAG} "${GPG1PATHFROM}" "${GPG1PATHTO}"
-    show "Copying contents of ${MODPROBEDIR} directory into initramfs..."
-    if [ "$(ls -A ${MODPROBEDIR})" ]; then
-        cp ${VERBOSITYFLAG} "${MODPROBEDIR}"/* "${INITRAMFSDIR}${MODPROBEDIR}/"
+
+    if ((USINGMODULES==1)); then
+        show "Copying contents of ${MODPROBEDIR} directory into initramfs..."
+        if [ "$(ls -A ${MODPROBEDIR})" ]; then
+            cp ${VERBOSITYFLAG} "${MODPROBEDIR}"/* "${INITRAMFSDIR}${MODPROBEDIR}/"
+        fi
     fi
+
     # you can define user_modify_initramfs in your buildkernel.conf file...
     if fn_exists user_modify_initramfs; then
         show "Calling user_modify_initramfs function..."
