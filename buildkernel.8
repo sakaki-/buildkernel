@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.26: November 2017"
+.TH BUILDKERNEL 8 "Version 1.0.27: November 2017"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -87,6 +87,10 @@ ensures that an EFI boot entry for the new kernel exists, and that it is placed 
 .IP \(bu 2
 performs a filesystem sync and then unmounts the EFI system partition (if you so specify, see the \fB--unmount-at-end\fR option text).
 .RE
+.SH MONOLITHIC KERNEL SUPPORT
+If \fBCONFIG_MODULES\fR is unset, \fBbuildkernel\fR will automatically detect
+this, and in such a case will not attempt to build or install modules during
+the flow just described.
 .SH OPTIONS
 .TP
 .BR \-a ", " \-\-ask

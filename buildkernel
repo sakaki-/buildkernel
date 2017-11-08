@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.26"
+VERSION="1.0.27"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -468,8 +468,8 @@ setup_final_variables() {
         KERNEL_CMD_LINE+=" ${ADDITIONALKERNELCMDS}"
     fi
 
-    if grep -q "CONFIG_MODULES is not set" "${TARGETCONFIG}" > /dev/null; then
-        show "No module support, disabling kernel modules."
+    if grep -q "^# CONFIG_MODULES is not set$" "${TARGETCONFIG}" > /dev/null; then
+        warning "No module support, disabling kernel modules."
         USINGMODULES=0
     else
         USINGMODULES=1
