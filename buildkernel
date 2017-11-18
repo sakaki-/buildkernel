@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.27"
+VERSION="1.0.28"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -1740,7 +1740,8 @@ kernel_build_pass_1() {
     fi
 
     show "Installing firmware..."
-    ${MAKE} firmware_install
+    show "(where supported; in-kernel firmware was dropped in 4.14)"
+    ${MAKE} firmware_install || true
 }
 rebuild_external_modules_if_necessary() {
     if ((ARG_REBUILD_EXTERNAL_MODULES==1)); then
