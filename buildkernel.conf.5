@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.29: January 2018"
+.TH BUILDKERNEL 5 "Version 1.0.30: May 2018"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -176,6 +176,16 @@ Set to \fB0\fR only if you have your own EFI bootloader,
 or want to insert appropriate EFI boot settings manually.
 
 Most users will not need to override the default.
+.br
+.TP
+.BR COMPRESSINITRAMFS
+When set to \fB0\fR the \fBbuildkernel\fR script will \fInot\fR
+intruct the kernel to XZ compress its integral initrams (the default
+behaviour prior to version 1.0.30); doing so may cause boot
+issues on certain systems with modest RAM.
+
+Most users will not need to override the default.
+
 .RE
 .SH FUNCTIONS
 The following hook functions \fImay\fR be specified in \fB/etc/buildkernel.conf\fR if
@@ -201,7 +211,7 @@ function exit.
 .RE
 .SH COPYRIGHT
 .nf
-Copyright \(co 2014-2017 sakaki
+Copyright \(co 2014-2018 sakaki
 License GPLv3+ (GNU GPL version 3 or later)
 <http://gnu.org/licenses/gpl.html>
 
