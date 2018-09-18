@@ -457,6 +457,10 @@ setup_final_variables() {
     # has been set explicitly in buildkernel.conf
     KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
     KEYFILEPATHMAP="${PARTUUIDDEVDIR}/${KEYFILEPARTUUID}"
+    # set/update CMDLINE_ROOTFSTYPE to actual FS type if not defined in buildkernel.conf
+    if [ -z ${ROOTFILESYSTEMTYPE+xxx} ]; then
+        CMDLINE_ROOTFSTYPE="$(cut -d\" -f2 <<< $(cut -d' ' -f4 <<< $(/sbin/blkid -t LABEL=root)))"
+    fi
     # we use path syntax rather than "=PARTUUID=" syntax, as more reliable
     KERNEL_CMD_LINE="root=${CMDLINE_ROOT} crypt_root=${CRYPTPATHMAP} dolvm "
     KERNEL_CMD_LINE+="real_root=${CMDLINE_REAL_ROOT} rootfstype=${CMDLINE_ROOTFSTYPE} "
