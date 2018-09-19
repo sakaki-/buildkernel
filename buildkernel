@@ -72,9 +72,9 @@ SECUREBOOTCERT="/etc/efikeys/db.crt"
 SIGNEDSUFFIX=".signed"
 ADDITIONALKERNELCMDS=""
 ADDITIONALGENKERNELOPTS="--all-ramdisk-modules --firmware"
-CMDLINE_ROOTFSTYPE="ext4"
 CMDLINE_REAL_ROOT="/dev/mapper/vg1-root"
 CMDLINE_REAL_RESUME="/dev/mapper/vg1-swap"
+CMDLINE_ROOTFSTYPE="$(/bin/findmnt -n -o FSTYPE -S ${CMDLINE_REAL_ROOT})"
 declare -i DEFAULTCREATEEFIBOOT=1
 declare -i CREATEEFIBOOT="${DEFAULTCREATEEFIBOOT}"
 declare -i DEFAULTCOMPRESSINITRAMFS=1
@@ -457,10 +457,6 @@ setup_final_variables() {
     # has been set explicitly in buildkernel.conf
     KEYFILEPARTUUID="${KEYFILEPARTUUID:-${EFIPARTUUID}}"
     KEYFILEPATHMAP="${PARTUUIDDEVDIR}/${KEYFILEPARTUUID}"
-    # set/update CMDLINE_ROOTFSTYPE to actual FS type if not defined in buildkernel.conf
-    if [ -z ${ROOTFILESYSTEMTYPE+xxx} ]; then
-        CMDLINE_ROOTFSTYPE="$(cut -d\" -f2 <<< $(cut -d' ' -f4 <<< $(/sbin/blkid -t LABEL=root)))"
-    fi
     # we use path syntax rather than "=PARTUUID=" syntax, as more reliable
     KERNEL_CMD_LINE="root=${CMDLINE_ROOT} crypt_root=${CRYPTPATHMAP} dolvm "
     KERNEL_CMD_LINE+="real_root=${CMDLINE_REAL_ROOT} rootfstype=${CMDLINE_ROOTFSTYPE} "
