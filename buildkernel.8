@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.30: May 2018"
+.TH BUILDKERNEL 8 "Version 1.0.31: October 2018"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -83,7 +83,12 @@ backs up the old kernel and config on the EFI system partition, if any are prese
 .IP \(bu 2
 copies the newly built kernel (which is configured so as to be an EFI executable), into \fI/boot/efi/EFI/Boot/bootx64.efi\fR (the magic location expected by most UEFI BIOSes; you can override this \(em see \fBgenkenrnel.conf\fR(5)); and also copies the config to the same directory;
 .IP \(bu 2
-ensures that an EFI boot entry for the new kernel exists, and that it is placed at the top of the EFI boot order (N.B., it is only possible to do this if the system is currently booted under EFI);
+ensures that an EFI boot entry for the new kernel exists, and that it
+is placed at the top of the EFI boot order (N.B., it is only possible
+to do this if the system is currently booted under EFI); note that
+\fBbuildkernel\fR will temporarily make the special
+\fI/sys/firmware/efi/efivars\fR filesystem read-write, if required for
+these modifications to be made;
 .IP \(bu 2
 performs a filesystem sync and then unmounts the EFI system partition (if you so specify, see the \fB--unmount-at-end\fR option text).
 .RE

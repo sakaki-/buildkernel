@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.30: May 2018"
+.TH BUILDKERNEL 5 "Version 1.0.31: October 2018"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -183,6 +183,15 @@ When set to \fB0\fR the \fBbuildkernel\fR script will \fInot\fR
 intruct the kernel to XZ compress its integral initrams (the default
 behaviour prior to version 1.0.30); doing so may cause boot
 issues on certain systems with modest RAM.
+
+Most users will not need to override the default.
+.br
+.TP
+.BR CMDLINE_ROOTFSTYPE
+If you wish to explicitly specify your root filesystem's type, do so
+via this variable. Otherwise, \fBbuildkernel\fR will attempt to
+automatically detect the filesystem type of \fBCMDLINE_REAL_ROOT\fR
+(falling back to \fBext4\fR, in case of error).
 
 Most users will not need to override the default.
 
