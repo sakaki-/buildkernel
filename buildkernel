@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.31"
+VERSION="1.0.32"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -481,6 +481,7 @@ setup_final_variables() {
     # falling back to ext4 if the findmnt-based lookup fails
     if [[ ! -v CMDLINE_ROOTFSTYPE ]]; then
         CMDLINE_ROOTFSTYPE="$(/bin/findmnt -n -o FSTYPE -S ${CMDLINE_REAL_ROOT} 2>/dev/null || echo ext4)"
+        CMDLINE_ROOTFSTYPE="$(head -n 1 <<<"${CMDLINE_ROOTFSTYPE}")"
     fi
     # we use path syntax rather than "=PARTUUID=" syntax, as more reliable
     KERNEL_CMD_LINE="root=${CMDLINE_ROOT} crypt_root=${CRYPTPATHMAP} dolvm "
