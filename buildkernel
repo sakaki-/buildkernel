@@ -436,10 +436,10 @@ source_etc_conf_file() {
             KERNEL_SIGNING_CERT="${LINUXDIR}/certs/signing_key.x509"
             KERNEL_SIGNING_KEY="${LINUXDIR}/certs/signing_key.pem"
         else
-            if [[ ! -f KERNEL_SIGNING_CERT ]]; then
+            if [[ ! -f "${KERNEL_SIGNING_CERT}" ]]; then
                 die "Cannot proceed; KERNEL_SIGNING_CERT is not a valid path to a file."
             fi
-            if [[ ! -f KERNEL_SIGNING_KEY ]]; then
+            if [[ ! -f "${KERNEL_SIGNING_KEY}" ]]; then
                 die "Cannot proceed; KERNEL_SIGNING_KEY is not a valid path to a file."
             fi
         fi
