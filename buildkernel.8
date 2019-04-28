@@ -61,7 +61,7 @@ cleans the kernel tree (if you specify \fB--clean\fR; you will be asked whether 
 .IP \(bu 2
 builds the kernel, and its modules, with the specified configuration; in this first pass, an empty initramfs is used (since it must be incorporated in the kernel, to be protected by UEFI secure boot, but we don't have everything necessary to include in it, yet!);
 .IP \(bu 2
-builds any external modules (such as those required for VirtualBox), using \fBemerge @module-rebuild\fR, if you so specify (using the option \fB--rebuild-external-modules\fR);
+builds any external modules (such as those required for VirtualBox), using \fBemerge @module-rebuild\fR, if you so specify (using the option \fB--rebuild-external-modules\fR), and optionally signs them (if you have set up the variables \fBKERNEL_SIGNING_CERT\fR and \fBKERNEL_SIGNING_KEY\fR in \fI/etc/buildkernel.conf\fR);
 .IP \(bu 2
 creates a first cut of the initramfs using \fBgenkernel\fR(8) (see below for more details); this will contain \fBgenkernel\fR(8)'s \fBinit\fR(8) script, compiled modules, any necessary firmware (if you haven't deblobbed), and a minimal set of binaries; it does \fInot\fR at this point contain a static copy of \fBgpg\fR;
 .IP \(bu 2
