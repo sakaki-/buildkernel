@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.33: October 2018"
+.TH BUILDKERNEL 5 "Version 1.0.34: April 2019"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -194,6 +194,26 @@ automatically detect the filesystem type of \fBCMDLINE_REAL_ROOT\fR
 (falling back to \fBext4\fR, in case of error).
 
 Most users will not need to override the default.
+.br
+.TP
+.BR KERNEL_SIGNING_CERT
+If you sign your kernel modules, set this to the path for the signing
+certificate so that your external modules are signed after being built.
+Setting to \fBauto\fR uses the kernel's automatically generated signing
+certificate if you have configured it to generate it.
+
+By default this is not set and causes external modules to not be signed.
+Requires that the \fBKERNEL_SIGNING_KEY\fR variable is set.
+.br
+.TP
+.BR KERNEL_SIGNING_KEY
+If you sign your kernel modules, set this to the path for the signing key so
+that your external modules are signed after being built. Setting to \fBauto\fR
+uses the kernel's automatically generated signing key if you have configured it
+to generate it.
+
+By default this is not set and causes external modules to not be signed.
+Requires that the \fBKERNEL_SIGNING_CERT\fR variable is set.
 
 .RE
 .SH FUNCTIONS

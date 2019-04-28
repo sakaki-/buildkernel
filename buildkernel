@@ -31,7 +31,7 @@ shopt -s nullglob
 # ********************** variables ********************* 
 PROGNAME="$(basename "${0}")"
 CONFFILE="/etc/${PROGNAME}.conf"
-VERSION="1.0.33"
+VERSION="1.0.34"
 ETCPROFILE="/etc/profile"
 DEFAULTEFIBOOTFILE="bootx64.efi"
 EFIBOOTFILE="${DEFAULTEFIBOOTFILE}"
@@ -109,6 +109,7 @@ GPGBUILDDIR="/root/tmpgpgbuild"
 TMPGPGPATH="${GPGBUILDDIR}/usr/bin/gpg"
 declare -i USINGUSBKEYFOREFI=0
 declare -i BACKUPOLDKERNEL=1
+declare -i BUILT_EXTERNAL_MODULES=1
 
 EFIPARTNAME="EFI boot partition"
 DEFAULTKEYMAP="us"
@@ -422,6 +423,29 @@ source_etc_conf_file() {
     # map INITSYSTEM to lower case
     if [[ -v INITSYSTEM ]]; then
         INITSYSTEM="${INITSYSTEM,,}"
+    fi
+    # perform checks on KERNEL_SIGNING_CERT and KERNEL_SIGNING_KEY
+    if [[ -v KERNEL_SIGNING_CERT ]]; then
+        if [[ ! -v KERNEL_SIGNING_KEY ]]; then
+            die "Cannot proceed; KERNEL_SIGNING_CERT is configured, but KERNEL_SIGNING_KEY is not."
+        fi
+        if [[ "${KERNEL_SIGNING_CERT}" == "auto" || "${KERNEL_SIGNING_KEY}" == "auto" ]]; then
+            if [[ "${KERNEL_SIGNING_CERT}" != "${KERNEL_SIGNING_KEY}" ]]; then
+                die "Cannot proceed; in automatic external module signing mode, both KERNEL_SIGNING_CERT and KERNEL_SIGNING_KEY must be set to \"auto\""
+            fi
+            KERNEL_SIGNING_CERT="${LINUXDIR}/certs/signing_key.x509"
+            KERNEL_SIGNING_KEY="${LINUXDIR}/certs/signing_key.pem"
+        else
+            if [[ ! -f "${KERNEL_SIGNING_CERT}" ]]; then
+                die "Cannot proceed; KERNEL_SIGNING_CERT is not a valid path to a file."
+            fi
+            if [[ ! -f "${KERNEL_SIGNING_KEY}" ]]; then
+                die "Cannot proceed; KERNEL_SIGNING_KEY is not a valid path to a file."
+            fi
+        fi
+    fi
+    if [[ -v KERNEL_SIGNING_KEY && ! -v KERNEL_SIGNING_CERT ]]; then
+        die "Cannot proceed; KERNEL_SIGNING_KEY is configured, but KERNEL_SIGNING_CERT is not."
     fi
 }
 setup_final_variables() {
@@ -1818,7 +1842,13 @@ rebuild_external_modules_if_necessary() {
             else
                 warning "Failed to complete emerge @module-rebuild due to error"
                 warning "Continuing..."
+                BUILT_EXTERNAL_MODULES=0
             fi
+        fi
+        if [[ ${BUILT_EXTERNAL_MODULES}==1 && -v KERNEL_SIGNING_CERT ]] ; then
+            for EXTERNAL_MODULE in `find /lib/modules/${NEWVERSION#"linux-"}/* -type f -name '*.ko' -not -path '*/kernel/*'`; do
+                "${LINUXDIR}/scripts/sign-file" sha512 "${KERNEL_SIGNING_KEY}" "${KERNEL_SIGNING_CERT}" "${EXTERNAL_MODULE}"
+            done
         fi
     fi
 }
