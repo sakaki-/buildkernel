@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.34: April 2019"
+.TH BUILDKERNEL 5 "Version 1.0.35: April 2019"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -214,6 +214,16 @@ to generate it.
 
 By default this is not set and causes external modules to not be signed.
 Requires that the \fBKERNEL_SIGNING_CERT\fR variable is set.
+.br
+.TP
+.BR DISABLE_HIBERNATION
+If you wish to disable hibernation, set this to \fB1\fR. This is set to
+\fB0\fR (Hibernation enabled) by default.
+.br
+.TP
+.BR DISABLE_LVM
+If your configuration doesn't use LVM, set this to \fB1\fR. This is set to
+\fB0\fR (LVM enabled) by default.
 
 .RE
 .SH FUNCTIONS
