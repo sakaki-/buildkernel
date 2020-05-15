@@ -1916,16 +1916,18 @@ build_static_gpg() {
     emerge ${VERBOSITYFLAG} "app-crypt/staticgpg"
 }
 modify_initramfs() {
-    if [ ! -x "${GPG1PATHFROM}" ]; then
-        if ((ARG_ASK==1)); then
-            continue_yn "No static gpg found, would you like to build it?"
-        else
-            show "No static gpg found, so creating one..."
+    if [ -n "${LUKSKEYFILE}" ]; then
+        if [ ! -x "${GPG1PATHFROM}" ]; then
+            if ((ARG_ASK==1)); then
+                continue_yn "No static gpg found, would you like to build it?"
+            else
+                show "No static gpg found, so creating one..."
+            fi
+            build_static_gpg
         fi
-        build_static_gpg
+        show "Copying static gpg program into initramfs..."
+        cp ${VERBOSITYFLAG} "${GPG1PATHFROM}" "${GPG1PATHTO}"
     fi
-    show "Copying static gpg program into initramfs..."
-    cp ${VERBOSITYFLAG} "${GPG1PATHFROM}" "${GPG1PATHTO}"
 
     if ((USINGMODULES==1)); then
         show "Copying contents of ${MODPROBEDIR} directory into initramfs..."
