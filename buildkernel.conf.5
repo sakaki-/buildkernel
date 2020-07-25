@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 5 "Version 1.0.36: February 2020"
+.TH BUILDKERNEL 5 "Version 1.0.37: July 2020"
 .SH NAME
 buildkernel.conf \- a configuration file for \fBbuildkernel\fR(8)
 .SH SYNOPSIS
@@ -79,7 +79,8 @@ the encrypted keyfile).
 .BR LUKSKEYFILE
 If you wish to rely only on the fallback passphrase (assuming you have set
 one up) and no keyfile, set this to the empty string (in which case,
-\fBKEYFILEPARTUUID\fR will be ignored). Defaults to \fBluks-key.gpg\fR if
+\fBKEYFILEPARTUUID\fR will be ignored) (and no static \fBgpg\fR(1)
+will be built into the initramfs). Defaults to \fBluks-key.gpg\fR if
 unset.
 .br
 .TP
@@ -255,7 +256,7 @@ function exit.
 .RE
 .SH COPYRIGHT
 .nf
-Copyright \(co 2014-2018 sakaki
+Copyright \(co 2014-2020 sakaki
 License GPLv3+ (GNU GPL version 3 or later)
 <http://gnu.org/licenses/gpl.html>
 

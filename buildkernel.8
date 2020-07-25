@@ -1,4 +1,4 @@
-.TH BUILDKERNEL 8 "Version 1.0.36: February 2020"
+.TH BUILDKERNEL 8 "Version 1.0.37: July 2020"
 .SH NAME
 buildkernel \- build secure boot kernel, save to EFI system partition
 .SH SYNOPSIS
@@ -20,7 +20,9 @@ init system.)
 
 To facilitate this, \fBbuildkernel\fR will create a statically linked version
 of \fBgpg\fR(1) \(em one which furthermore does not require \fBpinentry\fR \(em
-and include this in the initramfs.
+and include this in the initramfs (unless \fBLUKSKEYFILE\fR is
+left blank in \fI/etc/buildkernel.conf\fR: see \fBbuildkernel.conf\fR(5)
+for details).
 
 It will also automatically set the necessary kernel configuration parameters,
 including the command line, sign the resulting kernel if possible,
@@ -31,7 +33,7 @@ interactive mode (see the \fB--ask\fR option, below).
 Non-interactive mode is suitable for use in a scripted invocation.
 
 Certain key options can be specified via the configuration file, 
-\fI/etc/buildkernel.conf\fR: see \fBbuildkernel.conf\fR(5) for details.
+\fI/etc/buildkernel.conf\fR: again, see \fBbuildkernel.conf\fR(5) for details.
 
 Although \fBbuildkernel\fR is targetted primarily at the use-case where the
 EFI system partition is on a removable USB key (for security), it can
@@ -249,7 +251,7 @@ A post-reboot run of \fBgenup\fR(8) will achieve this.
 
 .SH COPYRIGHT
 .nf
-Copyright \(co 2014-2018 sakaki
+Copyright \(co 2014-2020 sakaki
 License GPLv3+ (GNU GPL version 3 or later)
 <http://gnu.org/licenses/gpl.html>
 
