@@ -1615,7 +1615,7 @@ ensure_efi_partition_mounted() {
         if ((ARG_ASK==1)); then
             continue_yn "Would you like to mount it now"
         else
-            show "Attemping to mount it..."
+            show "Attempting to mount it..."
         fi
         if ! mount_and_remember "${EFIPATHMAP}" "${EFIROOTDIR}" "vfat"; then
             die "Failed to mount ${EFIPATHMAP}"
@@ -1686,21 +1686,23 @@ update_config_if_necessary() {
     fi
 }
 conform_config_file() {
-    if [[ "${INITSYSTEM}" == "openrc" ]]; then
-        show "Although we are targeting OpenRC init, systemd kernel flags will"
-        show "still be set, to provide future flexibility"
-    fi
-    show "Setting Gentoo flags for systemd..."
     # our initial init is a script on the initramfs, which then hands off to
     # systemd or openrc...
-    set_kernel_config_list_to_y "GENTOO_LINUX GENTOO_LINUX_UDEV GENTOO_LINUX_INIT_SCRIPT GENTOO_LINUX_INIT_SYSTEMD"
-    # set up a few additional flags recommended in the wiki, but not forced on
-    # by the above
-    show "Setting additional recommended settings for systemd..."
-    # we omit IPV6 here - turn on manually if you want it
-    set_kernel_config_list_to_y "SECCOMP DMIID TMPFS_POSIX_ACL"
-    set_kernel_config "UEVENT_HELPER_PATH" ""
-    set_kernel_config_list_to_y "AUDIT AUDITSYSCALL"
+    set_kernel_config_list_to_y "GENTOO_LINUX GENTOO_LINUX_UDEV GENTOO_LINUX_INIT_SCRIPT"
+    if [[ "${INITSYSTEM}" == "openrc" ]]; then
+        show "Setting Gentoo flags for OpenRC..."
+        # no specific kernel configs needed
+    else
+        show "Setting Gentoo flags for systemd..."
+        set_kernel_config_list_to_y "GENTOO_LINUX_INIT_SYSTEMD"
+        # set up a few additional flags recommended in the wiki, but not forced on
+        # by the above
+        show "Setting additional recommended settings for systemd..."
+        # we omit IPV6 here - turn on manually if you want it
+        set_kernel_config_list_to_y "SECCOMP DMIID TMPFS_POSIX_ACL"
+        set_kernel_config "UEVENT_HELPER_PATH" ""
+        set_kernel_config_list_to_y "AUDIT AUDITSYSCALL"
+    fi
     show "Setting kernel command line = '${KERNEL_CMD_LINE}'..."
     set_kernel_config "CMDLINE_BOOL" "y"
     set_kernel_config "CMDLINE" "\"${KERNEL_CMD_LINE}\""
